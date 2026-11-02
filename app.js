@@ -81,21 +81,28 @@ function poolFor(poolId) {
   return (state.surfData?.pools || []).find(p => p.poolId === poolId) || null;
 }
 
-// Collateral factor comes from the pool's collateral asset config (ADA uses the pool default).
+// Health uses the liquidation threshold, so 1.0 is the liquidation point. This
+// reproduces surflending.org's own figure: 4,929 SURF collateral against 1,574 ADA
+// of debt -> (collateral value x 0.50) / debt = 0.51 on both sites.
 function collateralFactor(pos) {
   const pool = poolFor(pos.poolId);
   if (!pool) return 0;
   if (pos.collateralPolicyId) {
     const c = (pool.collateralAssets || []).find(x =>
       x.policyId === pos.collateralPolicyId && (x.assetName || '') === (pos.collateralAssetName || ''));
-    return c?.maxBorrowLTV || 0;
+    return c?.liquidationThresholdLTV || c?.maxBorrowLTV || 0;
   }
-  return pool.maxBorrowLTV || 0;
+  return pool.liquidationThresholdLTV || pool.maxBorrowLTV || 0;
 }
 
 function accruedInterestUsd(pos) {
   const decimals = pos.principalDecimals || 6;
   return ((pos.accruedInterest || 0) / Math.pow(10, decimals)) * (pos.principalPriceUSD || 0);
+}
+
+function fmtAdaPrecise(v) {
+  if (v == null || isNaN(v)) return '0.000000 ADA';
+  return Number(v).toFixed(6) + ' ADA';
 }
 
 // Accrued interest is reported in ADA, independent of the USD/ADA toggle.
@@ -386,13 +393,13 @@ function renderSurfPositions() {
           const rowClass = ltv >= 0.9 ? 'row-danger' : status === 'at_risk' ? 'row-warning' : '';
           const healthTitle = health == null
             ? 'Collateral factor unavailable for this pool'
-            : `Health = (Collateral x ${fmtRatio(cf)}) / (Debt + Accrued interest)`;
+            : `Health = (Collateral value x ${fmtRatio(cf)} liquidation threshold) / (Debt + Accrued interest)`;
           return `
             <tr class="${rowClass}">
               <td>${escHtml(displayAddr(p.address, shorten(p.address || '', 8)))}</td>
               <td>${fmtMoney(p.collateralValueUSD)} ${tokenCell(p.collateralPolicyId, p.collateralAssetName, p.collateralTicker)}</td>
               <td>${fmtMoney(p.principalValueUSD)} ${tokenCell(p.principalPolicyId, p.principalAssetName, p.principalTicker)}</td>
-              <td class="txt-muted">${fmtADA(accruedInterestAda(p))}</td>
+              <td class="txt-muted">${fmtAdaPrecise(accruedInterestAda(p))}</td>
               <td>${fmtRatio(ltv)}</td>
               <td><span class="health ${healthClass(health)}" title="${escHtml(healthTitle)}">${health == null ? '—' : health.toFixed(2)}</span></td>
               <td>${fmtRatio(p.interestRate)}</td>
