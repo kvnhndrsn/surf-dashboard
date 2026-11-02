@@ -1,36 +1,6 @@
-import { bech32 } from 'bech32';
-
-const WALLET_LOGOS = {
-  eternl: 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="15" fill="#7c3aed"/><text x="16" y="22" font-size="16" text-anchor="middle" fill="white" font-weight="bold">E</text></svg>'),
-  nami: 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="15" fill="#f7931a"/><text x="16" y="22" font-size="16" text-anchor="middle" fill="white" font-weight="bold">N</text></svg>'),
-  lace: 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="15" fill="#00b4d8"/><text x="16" y="22" font-size="16" text-anchor="middle" fill="white" font-weight="bold">L</text></svg>'),
-  flint: 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="15" fill="#f43f5e"/><text x="16" y="22" font-size="16" text-anchor="middle" fill="white" font-weight="bold">F</text></svg>'),
-  gerowallet: 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="15" fill="#10b981"/><text x="16" y="22" font-size="16" text-anchor="middle" fill="white" font-weight="bold">G</text></svg>'),
-  typhoncip30: 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="15" fill="#6366f1"/><text x="16" y="22" font-size="16" text-anchor="middle" fill="white" font-weight="bold">T</text></svg>'),
-  vespr: 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="15" fill="#8b5cf6"/><text x="16" y="22" font-size="16" text-anchor="middle" fill="white" font-weight="bold">V</text></svg>'),
-  begin: 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="15" fill="#f59e0b"/><text x="16" y="22" font-size="16" text-anchor="middle" fill="white" font-weight="bold">B</text></svg>'),
-};
-
-const KNOWN_WALLETS = [
-  { id: 'eternl', name: 'Eternl' },
-  { id: 'nami', name: 'Nami' },
-  { id: 'lace', name: 'Lace' },
-  { id: 'flint', name: 'Flint' },
-  { id: 'gerowallet', name: 'Gero' },
-  { id: 'typhoncip30', name: 'Typhon' },
-  { id: 'vespr', name: 'Vespr' },
-  { id: 'begin', name: 'Begin' },
-];
-
 const CHARTS = {};
 
 const state = {
-  wallet: null,
-  api: null,
-  address: null,
-  addresses: [],
-  stakeAddresses: [],
-  hexAddress: null,
   surfData: null,
   theme: 'light',
   chartRange: '7d',
@@ -39,11 +9,12 @@ const state = {
   graphFetchedAt: 0,
   analyticsData: null,
   activityPage: 0,
-  activityPageSize: 20,
-  activityPerPage: 20,
+  activityPageSize: 50,
+  activityPerPage: 50,
   activityTotal: 0,
   holderSort: { col: 'balance', dir: 'desc' },
   positionSort: { col: 'collateral', dir: 'desc' },
+  poolSort: { col: 'supplied', dir: 'desc' },
   filterAddr: '',
   filterPool: '',
   filterStatus: '',
@@ -102,6 +73,45 @@ function fmtNum(v) {
   if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(2) + 'M';
   if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(2) + 'K';
   return n.toFixed(2);
+}
+
+/* ---------- Loan health ---------- */
+
+function poolFor(poolId) {
+  return (state.surfData?.pools || []).find(p => p.poolId === poolId) || null;
+}
+
+// Collateral factor comes from the pool's collateral asset config (ADA uses the pool default).
+function collateralFactor(pos) {
+  const pool = poolFor(pos.poolId);
+  if (!pool) return 0;
+  if (pos.collateralPolicyId) {
+    const c = (pool.collateralAssets || []).find(x =>
+      x.policyId === pos.collateralPolicyId && (x.assetName || '') === (pos.collateralAssetName || ''));
+    return c?.maxBorrowLTV || 0;
+  }
+  return pool.maxBorrowLTV || 0;
+}
+
+function accruedInterestUsd(pos) {
+  const decimals = pos.principalDecimals || 6;
+  return ((pos.accruedInterest || 0) / Math.pow(10, decimals)) * (pos.principalPriceUSD || 0);
+}
+
+// Health = (Collateral Value x Collateral Factor) / (Borrowed + Accrued Interest)
+function positionHealth(pos) {
+  const cf = collateralFactor(pos);
+  const debt = (pos.principalValueUSD || 0) + accruedInterestUsd(pos);
+  if (!(debt > 0) || !(cf > 0)) return null;
+  return ((pos.collateralValueUSD || 0) * cf) / debt;
+}
+
+function healthClass(health) {
+  if (health == null) return '';
+  if (health >= 1.5) return 'health-good';
+  if (health >= 1.15) return 'health-ok';
+  if (health >= 1) return 'health-warn';
+  return 'health-bad';
 }
 
 function fmtShort(s, n = 8) {
@@ -200,111 +210,11 @@ function initTheme() {
   state.theme = theme;
 }
 
-/* ---------- Wallet ---------- */
-
-function getAvailableWallets() {
-  const available = [];
-  const cardano = window.cardano || {};
-  for (const w of KNOWN_WALLETS) {
-    const ext = cardano[w.id];
-    if (ext && typeof ext.enable === 'function') {
-      available.push({ ...w, icon: ext.icon || w.icon, version: ext.apiVersion });
-    }
-  }
-  return available;
-}
-
-function openWalletModal() {
-  const list = $('#walletList');
-  const availableIds = new Set(window.cardano ? KNOWN_WALLETS.filter(w => window.cardano[w.id]).map(w => w.id) : []);
-  list.innerHTML = KNOWN_WALLETS.map(w => {
-    const avail = availableIds.has(w.id);
-    return `
-      <button class="wallet-btn ${avail ? '' : 'wallet-btn-unavail'}" data-wallet="${w.id}" ${avail ? '' : 'disabled'}>
-        <img class="wallet-logo ${avail ? '' : 'wallet-logo-dim'}" src="${WALLET_LOGOS[w.id] || ''}" alt="">
-        ${w.name}
-        ${avail ? '' : '<span class="wallet-unavail-tag">unavailable</span>'}
-      </button>`;
-  }).join('');
-  list.querySelectorAll('.wallet-btn:not([disabled])').forEach(btn => {
-    btn.addEventListener('click', async () => await connectWallet(btn.dataset.wallet));
-  });
-  $('#walletModal').classList.add('open');
-}
-
-async function connectWallet(walletId) {
-  try {
-    const ext = window.cardano[walletId];
-    if (!ext) throw new Error('Wallet not found');
-    const api = await ext.enable();
-    const usedAddrs = await api.getUsedAddresses();
-    let allHex = [...usedAddrs];
-    try {
-      const unusedAddrs = await api.getUnusedAddresses();
-      if (Array.isArray(unusedAddrs)) allHex = [...usedAddrs, ...unusedAddrs];
-    } catch {}
-    if (allHex.length === 0) throw new Error('No address returned by wallet');
-    const rewardAddrs = await api.getRewardAddresses();
-    state.wallet = walletId;
-    state.api = api;
-    state.addresses = allHex.map(h => hexToBech32(h));
-    state.address = state.addresses[0];
-    state.hexAddress = allHex[0];
-    state.stakeAddresses = rewardAddrs.map(h => hexToBech32(h));
-    updateWalletUI();
-    prefetchHandles(state.addresses).then(() => updateWalletUI());
-    toast('Connected: ' + displayAddr(state.address, shorten(state.address, 8)), 'success');
-    $('#walletModal').classList.remove('open');
-    fetchSurfDashboard();
-  } catch (e) {
-    toast('Connection failed: ' + e.message, 'error');
-  }
-}
-
-function hexToBech32(hex) {
-  if (!hex || hex.length < 2) throw new Error('Invalid hex address');
-  const pairs = hex.match(/.{1,2}/g);
-  if (!pairs) throw new Error('Invalid hex address');
-  const bytes = new Uint8Array(pairs.map(b => parseInt(b, 16)));
-  const header = bytes[0];
-  const typeBits = (header >> 4) & 0x07;
-  const networkBit = header & 0x01;
-  const isStake = typeBits >= 6;
-  const basePrefix = isStake ? 'stake' : 'addr';
-  const prefix = networkBit ? basePrefix : basePrefix + '_test';
-  return bech32.encode(prefix, bech32.toWords(bytes), 200);
-}
-
-function updateWalletUI() {
-  const area = $('#walletArea');
-  if (state.address) {
-    area.innerHTML = `
-      <span class="tooltip" style="margin-right:0.1rem;font-size:0.7rem">${escHtml(displayAddr(state.address, shorten(state.address, 5)))}</span>
-      <button class="btn btn-sm" id="disconnectBtn">Disconnect</button>`;
-    $('#disconnectBtn').addEventListener('click', disconnectWallet);
-  } else {
-    area.innerHTML = `<button class="btn btn-sm btn-primary" id="connectBtn">Connect Wallet</button>`;
-    $('#connectBtn').addEventListener('click', openWalletModal);
-  }
-}
-
-function disconnectWallet() {
-  state.wallet = null;
-  state.api = null;
-  state.address = null;
-  state.addresses = [];
-  state.stakeAddresses = [];
-  state.hexAddress = null;
-  updateWalletUI();
-  toast('Disconnected');
-}
-
 /* ---------- Data Fetching ---------- */
 
 async function fetchSurfDashboard() {
   try {
     const params = new URLSearchParams();
-    if (state.address) params.set('address', state.address);
     if (state.filterAddr) params.set('filterAddr', state.filterAddr);
     if (state.filterPool) params.set('filterPool', state.filterPool);
     if (state.filterStatus) params.set('filterStatus', state.filterStatus);
@@ -317,7 +227,7 @@ async function fetchSurfDashboard() {
     renderSurfPoolFilter();
     renderSurfPositions();
     renderSurfPoolApys();
-    renderPoolDeepDive();
+    renderPoolTable();
     renderAnalytics();
     renderSurfTokenStats();
 
@@ -334,7 +244,7 @@ async function fetchSurfDashboard() {
     Promise.all([
       prefetchTokenIcons(assets).then(() => {
         renderSurfPoolApys();
-        renderPoolDeepDive();
+        renderPoolTable();
         renderSurfPositions();
       }),
       prefetchHandles(addrs).then(() => renderSurfPositions()),
@@ -404,10 +314,11 @@ function positionStatus(p) {
 
 const POSITION_SORTS = {
   address: p => p.address || '',
-  pool: p => p.principalTicker || p.poolId || '',
   collateral: p => p.collateralValueUSD || 0,
-  borrowed: p => p.totalOwedUSD || 0,
+  borrowed: p => p.principalValueUSD || 0,
+  accrued: p => accruedInterestUsd(p),
   ltv: p => p.ltv || 0,
+  health: p => positionHealth(p) ?? 999,
   rate: p => p.interestRate || 0,
   status: p => positionStatus(p),
 };
@@ -450,10 +361,11 @@ function renderSurfPositions() {
       <thead>
         <tr>
           <th data-sort="address">Address<span class="sort-arrow">${sortArrow('address')}</span></th>
-          <th data-sort="pool">Borrowed Asset<span class="sort-arrow">${sortArrow('pool')}</span></th>
           <th data-sort="collateral">Collateral<span class="sort-arrow">${sortArrow('collateral')}</span></th>
           <th data-sort="borrowed">Debt<span class="sort-arrow">${sortArrow('borrowed')}</span></th>
+          <th data-sort="accrued">Accrued<span class="sort-arrow">${sortArrow('accrued')}</span></th>
           <th data-sort="ltv">LTV<span class="sort-arrow">${sortArrow('ltv')}</span></th>
+          <th data-sort="health">Health<span class="sort-arrow">${sortArrow('health')}</span></th>
           <th data-sort="rate">Rate<span class="sort-arrow">${sortArrow('rate')}</span></th>
           <th data-sort="status">Status<span class="sort-arrow">${sortArrow('status')}</span></th>
         </tr>
@@ -462,14 +374,20 @@ function renderSurfPositions() {
         ${positions.map(p => {
           const ltv = p.ltv || 0;
           const status = positionStatus(p);
+          const health = positionHealth(p);
+          const cf = collateralFactor(p);
           const rowClass = ltv >= 0.9 ? 'row-danger' : status === 'at_risk' ? 'row-warning' : '';
+          const healthTitle = health == null
+            ? 'Collateral factor unavailable for this pool'
+            : `(${fmtMoney(p.collateralValueUSD)} x ${fmtRatio(cf)}) / (${fmtMoney(p.principalValueUSD)} debt + ${fmtMoney(accruedInterestUsd(p))} accrued)`;
           return `
             <tr class="${rowClass}">
               <td>${escHtml(displayAddr(p.address, shorten(p.address || '', 8)))}</td>
-              <td>${tokenCell(p.principalPolicyId, p.principalAssetName, p.principalTicker || '?')}</td>
               <td>${fmtMoney(p.collateralValueUSD)} ${tokenCell(p.collateralPolicyId, p.collateralAssetName, p.collateralTicker)}</td>
-              <td>${fmtMoney(p.totalOwedUSD)} ${tokenCell(p.principalPolicyId, p.principalAssetName, p.principalTicker)}</td>
+              <td>${fmtMoney(p.principalValueUSD)} ${tokenCell(p.principalPolicyId, p.principalAssetName, p.principalTicker)}</td>
+              <td class="txt-muted">${fmtMoney(accruedInterestUsd(p))}</td>
               <td>${fmtRatio(ltv)}</td>
+              <td><span class="health ${healthClass(health)}" title="${escHtml(healthTitle)}">${health == null ? '—' : health.toFixed(2)}</span></td>
               <td>${fmtRatio(p.interestRate)}</td>
               <td><span class="status-badge status-${status}">${escHtml(status.replace('_', ' '))}</span></td>
             </tr>`;
@@ -556,57 +474,79 @@ function poolIconPile(p) {
   return `<span class="pool-icon-pile">${imgs.join('')}</span>`;
 }
 
-function renderPoolDeepDive() {
-  const container = $('#poolDeepDive');
-  const pools = [...(state.surfData?.pools || [])]
-    .sort((a, b) => (b.totalSuppliedUSD || 0) - (a.totalSuppliedUSD || 0));
+const POOL_SORTS = {
+  pool: p => (p.asset?.ticker || '') + p.poolId,
+  collateral: p => (p.collateralAssets || []).map(c => c.ticker).join(','),
+  supplied: p => p.totalSuppliedUSD || 0,
+  borrowed: p => p.totalBorrowedUSD || 0,
+  utilization: p => p.utilizationRate || 0,
+  supplyApy: p => p.supplyApyTotal || 0,
+  borrowApr: p => p.borrowApr || 0,
+  maxLtv: p => p.maxBorrowLTV || 0,
+};
+
+function renderPoolTable() {
+  const container = $('#poolTableWrap');
+  if (!container) return;
+  const pools = [...(state.surfData?.pools || [])];
   if (pools.length === 0) {
-    container.innerHTML = '<div class="empty-state"><p>No pool data available.</p></div>';
+    container.innerHTML = '<div class="empty-state"><strong>No pool data</strong></div>';
     return;
   }
-  container.innerHTML = pools.map(p => `
-    <div class="pool-card">
-      <div class="pool-card-header">
-        ${poolIconPile(p)}
-        <span class="pool-card-title">${escHtml(poolLabel(p))}</span>
-        <span class="pool-metric-val">${fmtRatio(p.supplyApyTotal)}</span>
-      </div>
-      <div class="pool-card-body">
-        <div class="pool-metric">
-          <span class="pool-metric-label">Supplied</span>
-          <span class="pool-metric-val">${fmtMoney(p.totalSuppliedUSD)}</span>
-        </div>
-        <div class="pool-metric">
-          <span class="pool-metric-label">Borrowed</span>
-          <span class="pool-metric-val">${fmtMoney(p.totalBorrowedUSD)}</span>
-        </div>
-        <div class="pool-metric">
-          <span class="pool-metric-label">Utilization</span>
-          <span class="pool-metric-val">${fmtRatio(p.utilizationRate)}</span>
-        </div>
-        <div class="pool-metric">
-          <span class="pool-metric-label">Supply APY</span>
-          <span class="pool-metric-val">${fmtRatio(p.supplyApyTotal)}</span>
-        </div>
-        <div class="pool-metric">
-          <span class="pool-metric-label">Borrow APR</span>
-          <span class="pool-metric-val">${fmtRatio(p.borrowApr)}</span>
-        </div>
-        <div class="pool-metric">
-          <span class="pool-metric-label">Max LTV</span>
-          <span class="pool-metric-val">${fmtRatio(p.maxBorrowLTV)}</span>
-          <span class="pool-metric-sub">Liq ${fmtRatio(p.liquidationThresholdLTV)}</span>
-        </div>
-        <div class="pool-metric">
-          <span class="pool-metric-label">Reserve Factor</span>
-          <span class="pool-metric-val">${fmtRatio(p.reserveFactor)}</span>
-        </div>
-        <div class="pool-metric">
-          <span class="pool-metric-label">Collateral</span>
-          <span class="pool-metric-val" style="font-size:0.75rem">${escHtml((p.collateralAssets || []).map(c => c.ticker).join(', ') || '—')}</span>
-        </div>
-      </div>
-    </div>`).join('');
+
+  const { col, dir } = state.poolSort;
+  const keyOf = POOL_SORTS[col] || POOL_SORTS.supplied;
+  pools.sort((a, b) => {
+    const av = keyOf(a), bv = keyOf(b);
+    if (typeof av === 'string') return dir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+    return dir === 'asc' ? av - bv : bv - av;
+  });
+  const sortArrow = (key) => (state.poolSort.col === key ? (state.poolSort.dir === 'asc' ? ' ▲' : ' ▼') : '');
+
+  container.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th data-sort="pool">Pool<span class="sort-arrow">${sortArrow('pool')}</span></th>
+          <th data-sort="collateral">Collateral<span class="sort-arrow">${sortArrow('collateral')}</span></th>
+          <th data-sort="supplied">Supplied<span class="sort-arrow">${sortArrow('supplied')}</span></th>
+          <th data-sort="borrowed">Borrowed<span class="sort-arrow">${sortArrow('borrowed')}</span></th>
+          <th data-sort="utilization">Utilization<span class="sort-arrow">${sortArrow('utilization')}</span></th>
+          <th data-sort="supplyApy">Supply APY<span class="sort-arrow">${sortArrow('supplyApy')}</span></th>
+          <th data-sort="borrowApr">Borrow APR<span class="sort-arrow">${sortArrow('borrowApr')}</span></th>
+          <th data-sort="maxLtv">Max LTV<span class="sort-arrow">${sortArrow('maxLtv')}</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        ${pools.map(p => `
+            <tr>
+              <td><span class="pool-cell">${poolIconPile(p)}${escHtml(poolLabel(p))}</span></td>
+              <td><span class="coll-tags">${(p.collateralAssets || []).map(c => {
+                const icon = assetIcon(c);
+                return `<span class="coll-tag">${icon ? `<img class="token-icon-sm" src="${escHtml(icon)}" alt="">` : ''}${escHtml(c.ticker || '?')}</span>`;
+              }).join('') || '<span class="txt-muted">—</span>'}</span></td>
+              <td>${fmtMoney(p.totalSuppliedUSD)}</td>
+              <td>${fmtMoney(p.totalBorrowedUSD)}</td>
+              <td>${fmtRatio(p.utilizationRate)}</td>
+              <td class="txt-success">${fmtRatio(p.supplyApyTotal)}</td>
+              <td>${fmtRatio(p.borrowApr)}</td>
+              <td>${fmtRatio(p.maxBorrowLTV)} <span class="txt-muted" style="font-size:0.65rem">liq ${fmtRatio(p.liquidationThresholdLTV)}</span></td>
+            </tr>`).join('')}
+      </tbody>
+    </table>`;
+
+  container.querySelectorAll('th[data-sort]').forEach(th => {
+    th.addEventListener('click', () => {
+      const key = th.dataset.sort;
+      if (state.poolSort.col === key) {
+        state.poolSort.dir = state.poolSort.dir === 'asc' ? 'desc' : 'asc';
+      } else {
+        state.poolSort.col = key;
+        state.poolSort.dir = 'desc';
+      }
+      renderPoolTable();
+    });
+  });
 }
 
 /* ---------- Analytics ---------- */
@@ -955,6 +895,41 @@ function renderStakingChart() {
 
 /* ---------- Activity ---------- */
 
+const ACTIVITY_TYPE_CLASSES = {
+  'deposit': 'act-deposit',
+  'withdraw': 'act-withdraw',
+  'borrow': 'act-borrow',
+  'repay': 'act-repay',
+  'repay with collateral': 'act-repaycoll',
+  'leveraged borrow': 'act-leverage',
+  'add collateral': 'act-collateral',
+  'remove collateral': 'act-collateral',
+  'liquidate': 'act-liquidate',
+  'liquidation': 'act-liquidate',
+};
+
+function activityTypeClass(type) {
+  return ACTIVITY_TYPE_CLASSES[(type || '').toLowerCase()] || 'act-other';
+}
+
+// Activity rows carry the asset subject (policyId + assetName hex); '' means ADA.
+function subjectIcon(subject) {
+  if (!subject || subject.length <= 56) return ADA_LOGO;
+  return tokenIcon(subject.slice(0, 56), subject.slice(56)) || null;
+}
+
+function activityAssets(items) {
+  const out = [];
+  for (const a of items) {
+    for (const subject of [a.asset, a.collateral_asset]) {
+      if (subject && subject.length > 56) {
+        out.push({ policyId: subject.slice(0, 56), assetName: subject.slice(56) });
+      }
+    }
+  }
+  return out;
+}
+
 async function fetchActivity(page = 0) {
   try {
     const params = new URLSearchParams();
@@ -971,7 +946,9 @@ async function fetchActivity(page = 0) {
     state.activityPage = page;
     state.activityTotal = payload.total || 0;
     state.activityPerPage = payload.per_page || state.activityPageSize;
-    renderActivity(payload.data || []);
+    const items = payload.data || [];
+    renderActivity(items);
+    prefetchTokenIcons(activityAssets(items)).then(() => renderActivity(items));
     renderActivityPagination();
   } catch (e) {
     $('#activityList').innerHTML = '<div class="empty-state"><strong>Could not load activity</strong><p>' + escHtml(e.message) + '</p></div>';
@@ -987,19 +964,20 @@ function renderActivity(items) {
   }
   container.innerHTML = items.map(a => {
     const type = a.activity_type || '?';
-    const amount = a.amount_fmt ? (a.amount_fmt + ' ' + (a.asset_ticker || '')).trim() : '';
+    const amountIcon = subjectIcon(a.asset);
+    const collIcon = subjectIcon(a.collateral_asset);
+    const hasCollateral = Number(a.collateral_amount) > 0 && a.collateral_ticker;
+    const amountText = Number(a.amount) > 0 ? `${a.amount_fmt} ${a.asset_ticker || ''}`.trim() : '';
+    const collText = hasCollateral ? `${a.collateral_fmt} ${a.collateral_ticker}`.trim() : '';
     const link = a.tx_hash ? 'https://cardanoscan.io/transaction/' + a.tx_hash : '';
-    const time = escHtml(a.time_ago || '');
     return `
-      <div class="activity-item">
-        <span class="activity-type ${escHtml(type.toLowerCase().replace(/\s+/g, '_'))}">${escHtml(type)}</span>
-        <div class="activity-detail">
-          <strong>${escHtml(amount || '—')}</strong>
-          ${a.pool_ticker && a.pool_ticker !== a.asset_ticker ? ' on ' + escHtml(a.pool_ticker) : ''}
-          ${a.fee_fmt && a.fee_fmt !== '—' ? '<div class="activity-addr">fee ' + escHtml(a.fee_fmt) + '</div>' : ''}
-          ${a.address ? '<div class="activity-addr">' + escHtml(displayAddr(a.address, a.address_short || shorten(a.address, 8))) + '</div>' : ''}
-        </div>
-        <span class="activity-time">${link ? `<a href="${link}" target="_blank" rel="noopener">${time}</a>` : time}</span>
+      <div class="activity-row">
+        <span class="act-type ${activityTypeClass(type)}" title="${escHtml(type)}">${escHtml(type)}</span>
+        <span class="act-user" title="${escHtml(a.address || '')}">${escHtml(displayAddr(a.address, a.address_short || shorten(a.address || '', 6)))}</span>
+        <span class="act-amount">${amountIcon ? `<img class="token-icon" src="${escHtml(amountIcon)}" alt="">` : ''}${escHtml(amountText || '—')}</span>
+        <span class="act-collateral">${collText ? (collIcon ? `<img class="token-icon" src="${escHtml(collIcon)}" alt="">` : '') + escHtml(collText) : '<span class="txt-muted">—</span>'}</span>
+        <span class="act-time">${escHtml(a.time_ago || '')}</span>
+        <span class="act-link">${link ? `<a href="${link}" target="_blank" rel="noopener">View</a>` : '<span class="txt-muted">—</span>'}</span>
       </div>`;
   }).join('');
 }
@@ -1186,7 +1164,7 @@ $$('.tab').forEach(tab => {
     if (view === 'analytics' || view === 'pools' || view === 'surf' || view === 'positions') {
       if (state.surfData) {
         if (view === 'positions') renderSurfPositions();
-        if (view === 'pools') renderPoolDeepDive();
+        if (view === 'pools') renderPoolTable();
         if (view === 'analytics') renderAnalytics();
         if (view === 'surf') renderSurfTokenStats();
       }
@@ -1201,9 +1179,7 @@ $$('.tab').forEach(tab => {
 
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
-  updateWalletUI();
   fetchSurfDashboard();
-  $('#connectBtn')?.addEventListener('click', openWalletModal);
   $('#themeBtn')?.addEventListener('click', toggleTheme);
 
   $('#addrFilter')?.addEventListener('input', (e) => {
@@ -1246,12 +1222,4 @@ document.addEventListener('DOMContentLoaded', () => {
     fetchActivity(0);
   });
 
-  $$('[data-close]').forEach(el => {
-    el.addEventListener('click', () => $('#' + el.dataset.close).classList.remove('open'));
-  });
-  $$('.modal-overlay').forEach(overlay => {
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) overlay.classList.remove('open');
-    });
-  });
 });

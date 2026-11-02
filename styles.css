@@ -98,21 +98,38 @@ header {
 
 header nav { display: flex; align-items: center; justify-content: space-between; width: 100%; gap: 1rem; }
 
-.nav-tabs { display: flex; align-items: center; gap: 0; height: 100%; }
 .nav-actions { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
 
+.brand { display: flex; align-items: center; gap: 0.45rem; text-decoration: none; color: var(--text); margin-right: 0.5rem; flex-shrink: 0; }
+.brand-logo { width: 20px; height: 20px; }
+.brand-name { font-weight: 800; font-size: 0.92rem; letter-spacing: -0.01em; }
+.brand-sub { color: var(--text3); font-weight: 600; margin-left: 0.2rem; font-size: 0.72rem; }
+
+.nav-tabs {
+  display: flex; align-items: center; gap: 0.1rem; flex: 1;
+  padding: 0.15rem; border-radius: 999px;
+  background: color-mix(in srgb, var(--surface2) 45%, transparent);
+  border: 1px solid var(--border);
+  overflow-x: auto; scrollbar-width: none;
+}
+.nav-tabs::-webkit-scrollbar { display: none; }
+
 .nav-tabs .tab {
-  padding: 0.45rem 0.85rem; font-size: 0.82rem; font-weight: 500;
+  padding: 0.32rem 0.75rem; font-size: 0.78rem; font-weight: 600;
   border: none; background: transparent; color: var(--text3);
   cursor: pointer; font-family: inherit;
-  border-bottom: 2px solid transparent;
-  transition: all 0.15s;
+  border-radius: 999px;
+  transition: color 0.15s, background 0.15s, box-shadow 0.15s;
   display: inline-flex; align-items: center; gap: 0.35rem;
   white-space: nowrap;
 }
 
-.nav-tabs .tab:hover { color: var(--text); }
-.nav-tabs .tab-active { color: var(--primary); border-bottom-color: var(--primary); }
+.nav-tabs .tab:hover { color: var(--text); background: color-mix(in srgb, var(--surface2) 70%, transparent); }
+.nav-tabs .tab-active {
+  color: #fff; background: var(--primary);
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--primary) 35%, transparent);
+}
+.nav-tabs .tab-active:hover { background: var(--primary); color: #fff; }
 
 .btn {
   display: inline-flex; align-items: center; gap: 0.3rem;
@@ -198,40 +215,9 @@ table tbody tr:hover { background: var(--primary-dim); }
 
 .modal-close { float: right; }
 
-.wallet-list { display: flex; flex-direction: column; gap: 0.3rem; margin-bottom: 0.75rem; }
-
-.wallet-btn {
-  display: flex; align-items: center; gap: 0.5rem;
-  padding: 0.55rem 0.85rem; border-radius: var(--radius);
-  border: 1px solid var(--border); background: var(--surface2);
-  color: var(--text); cursor: pointer; font-size: 0.82rem;
-  transition: all 0.15s; font-family: inherit;
-}
-
-.wallet-btn:hover { border-color: var(--primary); background: var(--primary-dim); }
-
-.wallet-btn-unavail {
-  opacity: 0.45;
-  cursor: not-allowed;
-  filter: grayscale(1);
-}
-.wallet-btn-unavail:hover {
-  border-color: var(--border);
-  background: var(--surface2);
-}
-.wallet-logo-dim { opacity: 0.4; }
-.wallet-unavail-tag {
-  margin-left: auto;
-  font-size: 0.6rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text3);
-}
-
-.wallet-logo { width: 24px; height: 24px; flex-shrink: 0; border-radius: 50%; object-fit: cover; }
-
 .tooltip { font-size: 0.72rem; color: var(--text3); }
+
+.txt-muted { color: var(--text3); }
 
 .toast {
   position: fixed; bottom: 1.25rem; right: 1.25rem;
@@ -447,28 +433,78 @@ tr.row-danger { background: var(--danger-bg); }
   display: flex; gap: 0.4rem; margin-bottom: 0.75rem; flex-wrap: wrap;
 }
 
-.activity-list { display: flex; flex-direction: column; gap: 0.3rem; }
-
-.activity-item {
+.activity-panel {
   background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 0.5rem 0.65rem;
-  display: flex; align-items: center; gap: 0.5rem; font-size: 0.78rem;
+  border-radius: var(--radius); overflow: hidden;
 }
 
-.activity-type {
-  padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.62rem;
-  font-weight: 700; text-transform: uppercase; flex-shrink: 0;
+.activity-head, .activity-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.9fr) minmax(130px, 1.2fr) minmax(120px, 1fr) minmax(120px, 1fr) 90px 80px;
+  align-items: center; gap: 0.5rem; padding: 0.55rem 0.85rem;
 }
 
-.activity-type.deposit { background: var(--success-bg); color: var(--success); }
-.activity-type.withdraw { background: var(--danger-bg); color: var(--danger); }
-.activity-type.borrow { background: var(--warning-bg); color: var(--warning); }
-.activity-type.repay { background: var(--accent-bg); color: var(--accent); }
-.activity-type.liquidation { background: rgba(239, 68, 68, 0.25); color: var(--danger); }
+.activity-head {
+  font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.05em;
+  font-weight: 700; color: var(--text3);
+  border-bottom: 1px solid var(--border);
+}
 
-.activity-detail { flex: 1; min-width: 0; }
-.activity-addr { color: var(--text3); font-size: 0.68rem; }
-.activity-time { color: var(--text3); font-size: 0.65rem; flex-shrink: 0; }
+.activity-list { display: block; }
+
+.activity-row {
+  border-bottom: 1px solid var(--border); font-size: 0.78rem;
+  transition: background 0.12s;
+}
+.activity-row:last-child { border-bottom: none; }
+.activity-row:hover { background: var(--primary-dim); }
+
+.act-type {
+  justify-self: start; padding: 0.12rem 0.6rem; border-radius: 999px;
+  font-size: 0.68rem; font-weight: 700; white-space: nowrap;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+}
+.act-repay { background: rgba(168, 85, 247, 0.16); color: #a855f7; }
+.act-repaycoll { background: rgba(168, 85, 247, 0.12); color: #c084fc; }
+.act-borrow { background: var(--warning-bg); color: var(--warning); }
+.act-leverage { background: var(--accent-bg); color: var(--primary); }
+.act-deposit, .act-collateral { background: var(--success-bg); color: var(--success); }
+.act-withdraw, .act-liquidate { background: var(--danger-bg); color: var(--danger); }
+.act-other { background: var(--surface2); color: var(--text2); }
+
+.act-user {
+  justify-self: start; padding: 0.12rem 0.6rem; border-radius: 999px;
+  background: var(--primary-dim); color: var(--primary);
+  font-size: 0.7rem; font-weight: 600;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.act-amount, .act-collateral {
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums;
+  min-width: 0; white-space: nowrap;
+}
+
+.act-time { color: var(--text3); font-size: 0.72rem; }
+.act-link a { color: var(--primary); text-decoration: none; font-weight: 600; font-size: 0.75rem; }
+.act-link a:hover { text-decoration: underline; }
+
+.token-icon { width: 16px; height: 16px; border-radius: 50%; flex-shrink: 0; }
+
+/* Loan health */
+.health {
+  display: inline-flex; padding: 0.08rem 0.45rem; border-radius: 999px;
+  font-size: 0.72rem; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+.health-good { background: var(--success-bg); color: var(--success); }
+.health-ok { background: var(--accent-bg); color: var(--primary); }
+.health-warn { background: var(--warning-bg); color: var(--warning); }
+.health-bad { background: var(--danger-bg); color: var(--danger); }
+
+/* Pool table cells */
+.pool-cell { display: flex; align-items: center; gap: 0.4rem; color: var(--text); font-weight: 700; }
+.coll-tags { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.coll-tag { display: inline-flex; align-items: center; gap: 0.25rem; white-space: nowrap; }
 
 .pagination {
   display: flex; align-items: center; justify-content: center;
@@ -514,6 +550,10 @@ tr.row-danger { background: var(--danger-bg); }
   .surf-filters { flex-direction: column; }
   .surf-input { min-width: 0; }
   .activity-filters { flex-direction: column; }
+  .activity-head { display: none; }
+  .activity-row { grid-template-columns: 1fr 1fr; row-gap: 0.3rem; }
+  .act-time, .act-link { justify-self: start; }
+  .brand-sub { display: none; }
   .pool-grid { grid-template-columns: 1fr; }
   .summary-grid { grid-template-columns: repeat(2, 1fr); }
   .analytics-toolbar { flex-direction: column; align-items: flex-start; }
