@@ -316,7 +316,7 @@ function renderSurfSummary() {
   const d = state.surfData;
   if (!d) { container.innerHTML = ''; return; }
   const s = d.summary || {};
-  const atRisk = (d.positions || []).filter(p => (positionLtv(p) ?? 0) >= 0.75).length;
+  const atRisk = (d.positions || []).filter(p => positionStatus(p) === 'at_risk').length;
   const label = state.currency === 'usd' ? 'USD' : 'ADA';
   container.innerHTML = `
     <div class="summary-grid">
@@ -362,8 +362,22 @@ function renderSurfPoolFilter() {
   sel.value = pools.some(p => p.poolId === prev) ? prev : '';
 }
 
+const HEALTH_WARN = 1.15;
+
+// One source of truth for every colour in the row: the health score. Tinting rows
+// from LTV instead made two positions with identical health look different,
+// because the liquidation threshold varies by collateral asset.
 function positionStatus(p) {
-  return (positionLtv(p) ?? 0) >= 0.75 ? 'at_risk' : 'active';
+  const health = positionHealth(p);
+  return health != null && health <= HEALTH_WARN ? 'at_risk' : 'active';
+}
+
+function positionRowClass(p) {
+  const health = positionHealth(p);
+  if (health == null) return '';
+  if (health <= 1) return 'row-danger';
+  if (health <= HEALTH_WARN) return 'row-warning';
+  return '';
 }
 
 const POSITION_SORTS = {
@@ -430,7 +444,7 @@ function renderSurfPositions() {
           const status = positionStatus(p);
           const health = positionHealth(p);
           const threshold = liquidationThreshold(p);
-          const rowClass = (ltv ?? 0) >= 0.9 ? 'row-danger' : status === 'at_risk' ? 'row-warning' : '';
+          const rowClass = positionRowClass(p);
           const healthTitle = health == null
             ? 'Liquidation threshold unavailable for this pool'
             : `Health = Liquidation threshold (${fmtRatio(threshold)}) / LTV (${fmtRatio(ltv)})`;
