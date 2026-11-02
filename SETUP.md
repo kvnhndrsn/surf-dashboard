@@ -54,7 +54,7 @@ Project **Settings → API**:
 ## 3. Deploy and schedule
 
 1. Import `kvnhndrsn/surf-dashboard` into Vercel, add the variables from step 1 with the values from step 2, deploy.
-2. Note the deployment domain — the workflows in `.github/workflows/` currently call `https://cntpoll.vercel.app/...`. If the new deployment gets a different domain, update both workflow files (or better: set a repository variable `APP_URL` and reference `${{ vars.APP_URL }}`).
+2. The workflows in `.github/workflows/` call `https://surf-dashboard-hazel.vercel.app/...`. If the domain changes, update both files (or set a repository variable `APP_URL` and reference `${{ vars.APP_URL }}`).
 3. Add `SNAPSHOT_KEY` as a GitHub Actions secret (**Settings → Secrets and variables → Actions**). Without it the cron jobs get `401 invalid key`.
 4. Cron schedule: `snapshot.yml` hourly (charts/history), `activity-snapshot.yml` every 10 minutes (activity feed).
 
@@ -81,6 +81,8 @@ select count(*), max(activity_time) from surf_activities;
 
 Charts read from these tables, so the Analytics tab stays empty until at least two snapshots exist.
 
-## Known gaps in the current code
+## Troubleshooting
 
-- `app.js` calls `/api/surf-holders` and `/api/surf-activity`; neither route exists (the activity route is `api/activity.js` and holders are already returned inside `/api/surf-dashboard`). The Holders table and Activity tab will show their error states until those calls are wired up.
+- **`FUNCTION_INVOCATION_FAILED` on `/api/snapshot`, `/api/graph`, `/api/activity`:** `createClient()` runs at module load, so a missing `SUPABASE_URL` or `SUPABASE_SERVICE_KEY` crashes the whole function before the handler can return a readable error. Set both and redeploy.
+- **SURF tab shows price/stake but no holders:** holders come from Koios `asset_address_list`. If Koios rejects the call, `token` is `null` in `/api/surf-dashboard` and holder-dependent cards show `—`.
+- **Analytics empty:** the graphs read `surf_protocol_snapshots` / `surf_pool_snapshots`. They stay empty until the hourly cron has stored at least one snapshot.

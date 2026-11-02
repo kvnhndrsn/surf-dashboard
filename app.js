@@ -35,8 +35,12 @@ const state = {
   theme: 'light',
   chartRange: '7d',
   currency: 'usd',
+  graphRaw: null,
+  graphFetchedAt: 0,
+  analyticsData: null,
   activityPage: 0,
   activityPageSize: 20,
+  activityPerPage: 20,
   activityTotal: 0,
   holderSort: { col: 'balance', dir: 'desc' },
   positionSort: { col: 'collateral', dir: 'desc' },
@@ -75,6 +79,19 @@ function fmtADA(v) {
 function fmtPct(v) {
   if (v == null || isNaN(v)) return '0%';
   return v.toFixed(2) + '%';
+}
+
+// API values are USD; convert to ADA for the currency toggle.
+function fmtMoney(usdValue) {
+  const adaPrice = state.surfData?.summary?.adaPrice || 0;
+  if (state.currency === 'ada' && adaPrice > 0) return fmtADA(usdValue / adaPrice);
+  return fmtUSD(usdValue);
+}
+
+// API ratios (0.1538) to percent
+function fmtRatio(ratio) {
+  if (ratio == null || isNaN(ratio)) return '—';
+  return (ratio * 100).toFixed(2) + '%';
 }
 
 function fmtShort(s, n = 8) {
@@ -276,6 +293,8 @@ async function fetchSurfDashboard() {
     renderPoolDeepDive();
     renderAnalytics();
     renderSurfTokenStats();
+    const addrs = (state.surfData.positions || []).slice(0, 100).map(p => p.address).filter(Boolean);
+    prefetchHandles(addrs).then(() => renderSurfPositions());
   } catch (e) {
     console.error(e);
     $('#surfSummary').innerHTML = '<div class="empty-state"><strong>Could not load dashboard</strong><p>' + escHtml(e.message) + '</p></div>';
@@ -288,41 +307,40 @@ function renderSurfSummary() {
   const container = $('#surfSummary');
   const d = state.surfData;
   if (!d) { container.innerHTML = ''; return; }
-  const stats = d.summary || {};
-  const usd = state.currency === 'usd';
-  const fmt = usd ? fmtUSD : fmtADA;
-  const label = usd ? 'USD' : 'ADA';
+  const s = d.summary || {};
+  const atRisk = (d.positions || []).filter(p => (p.ltv || 0) >= 0.75).length;
+  const label = state.currency === 'usd' ? 'USD' : 'ADA';
   container.innerHTML = `
     <div class="summary-grid">
       <div class="summary-card">
         <div class="summary-label">Total Value Locked</div>
-        <div class="summary-value">${fmt(stats.tvl)}</div>
+        <div class="summary-value">${fmtMoney(s.totalTVLUSD)}</div>
         <div class="summary-sub">${label}</div>
+      </div>
+      <div class="summary-card">
+        <div class="summary-label">Total Supplied</div>
+        <div class="summary-value">${fmtMoney(s.totalSuppliedUSD)}</div>
+        <div class="summary-sub">${(s.totalPools || 0) + ' pools'}</div>
       </div>
       <div class="summary-card">
         <div class="summary-label">Total Borrowed</div>
-        <div class="summary-value">${fmt(stats.totalBorrowed)}</div>
+        <div class="summary-value">${fmtMoney(s.totalBorrowedUSD)}</div>
         <div class="summary-sub">${label}</div>
       </div>
       <div class="summary-card">
-        <div class="summary-label">Available to Borrow</div>
-        <div class="summary-value">${fmt(stats.availableBorrow)}</div>
+        <div class="summary-label">Total Collateral</div>
+        <div class="summary-value">${fmtMoney(s.totalCollateralUSD)}</div>
         <div class="summary-sub">${label}</div>
       </div>
       <div class="summary-card">
         <div class="summary-label">Active Positions</div>
-        <div class="summary-value">${stats.activePositions || 0}</div>
-        <div class="summary-sub">${(stats.atRiskPositions || 0) + ' at risk'}</div>
+        <div class="summary-value">${s.totalPositions || 0}</div>
+        <div class="summary-sub">${atRisk + ' at risk (LTV ≥ 75%)'}</div>
       </div>
       <div class="summary-card">
-        <div class="summary-label">SURF Staked</div>
-        <div class="summary-value">${stats.surfStaked ? fmtShort(stats.surfStaked) : '0'}</div>
-        <div class="summary-sub">${(stats.stakers || 0) + ' stakers'}</div>
-      </div>
-      <div class="summary-card">
-        <div class="summary-label">Total Revenue</div>
-        <div class="summary-value">${fmt(stats.totalRevenue)}</div>
-        <div class="summary-sub">All time ${label}</div>
+        <div class="summary-label">SURF Price</div>
+        <div class="summary-value">${fmtUSD(s.surfPriceUSD)}</div>
+        <div class="summary-sub">${fmtADA(s.surfPrice || 0)}</div>
       </div>
     </div>`;
 }
@@ -330,9 +348,25 @@ function renderSurfSummary() {
 function renderSurfPoolFilter() {
   const sel = $('#poolFilter');
   const pools = state.surfData?.pools || [];
+  const prev = sel.value;
   sel.innerHTML = '<option value="">All Pools</option>' +
-    pools.map(p => `<option value="${escHtml(p.id || p.name)}">${escHtml(p.name || p.id)}</option>`).join('');
+    pools.map(p => `<option value="${escHtml(p.poolId)}">${escHtml((p.asset?.ticker || '?') + ' · ' + p.poolId.slice(0, 8))}</option>`).join('');
+  sel.value = pools.some(p => p.poolId === prev) ? prev : '';
 }
+
+function positionStatus(p) {
+  return (p.ltv || 0) >= 0.75 ? 'at_risk' : 'active';
+}
+
+const POSITION_SORTS = {
+  address: p => p.address || '',
+  pool: p => p.principalTicker || p.poolId || '',
+  collateral: p => p.collateralValueUSD || 0,
+  borrowed: p => p.totalOwedUSD || 0,
+  ltv: p => p.ltv || 0,
+  rate: p => p.interestRate || 0,
+  status: p => positionStatus(p),
+};
 
 function renderSurfPositions() {
   const container = $('#surfTableWrap');
@@ -346,14 +380,14 @@ function renderSurfPositions() {
     const q = filterAddr.toLowerCase();
     positions = positions.filter(p => (p.address || '').toLowerCase().includes(q));
   }
-  if (filterPool) positions = positions.filter(p => (p.poolId === filterPool || p.poolName === filterPool));
-  if (filterStatus) positions = positions.filter(p => p.status === filterStatus);
+  if (filterPool) positions = positions.filter(p => p.poolId === filterPool);
+  if (filterStatus) positions = positions.filter(p => positionStatus(p) === filterStatus);
 
   const { col, dir } = positionSort;
+  const keyOf = POSITION_SORTS[col] || POSITION_SORTS.collateral;
   positions.sort((a, b) => {
-    let av = a[col], bv = b[col];
+    const av = keyOf(a), bv = keyOf(b);
     if (typeof av === 'string') return dir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
-    av = Number(av) || 0; bv = Number(bv) || 0;
     return dir === 'asc' ? av - bv : bv - av;
   });
 
@@ -372,31 +406,28 @@ function renderSurfPositions() {
       <thead>
         <tr>
           <th data-sort="address">Address<span class="sort-arrow">${sortArrow('address')}</span></th>
-          <th data-sort="poolName">Pool<span class="sort-arrow">${sortArrow('poolName')}</span></th>
+          <th data-sort="pool">Borrowed Asset<span class="sort-arrow">${sortArrow('pool')}</span></th>
           <th data-sort="collateral">Collateral<span class="sort-arrow">${sortArrow('collateral')}</span></th>
-          <th data-sort="borrowed">Borrowed<span class="sort-arrow">${sortArrow('borrowed')}</span></th>
+          <th data-sort="borrowed">Debt<span class="sort-arrow">${sortArrow('borrowed')}</span></th>
           <th data-sort="ltv">LTV<span class="sort-arrow">${sortArrow('ltv')}</span></th>
-          <th data-sort="apy">APY<span class="sort-arrow">${sortArrow('apy')}</span></th>
+          <th data-sort="rate">Rate<span class="sort-arrow">${sortArrow('rate')}</span></th>
           <th data-sort="status">Status<span class="sort-arrow">${sortArrow('status')}</span></th>
         </tr>
       </thead>
       <tbody>
         ${positions.map(p => {
-          const ltv = p.ltv != null ? p.ltv : (p.borrowed && p.collateral ? (p.borrowed / p.collateral) * 100 : 0);
-          const isAtRisk = p.status === 'at_risk' || ltv > 75;
-          const isBad = p.status === 'liquidated' || p.status === 'closed' || ltv > 90;
-          const rowClass = isBad ? 'row-danger' : isAtRisk ? 'row-warning' : '';
-          const statusClass = isBad ? 'status-liquidated' : isAtRisk ? 'status-at_risk' : 'status-active';
-          const statusLabel = p.status || (isAtRisk ? 'at_risk' : 'active');
+          const ltv = p.ltv || 0;
+          const status = positionStatus(p);
+          const rowClass = ltv >= 0.9 ? 'row-danger' : status === 'at_risk' ? 'row-warning' : '';
           return `
             <tr class="${rowClass}">
-              <td>${escHtml(shorten(p.address, 8))}</td>
-              <td>${escHtml(p.poolName || p.poolId || '-')}</td>
-              <td>${fmtUSD(p.collateral)}</td>
-              <td>${fmtUSD(p.borrowed)}</td>
-              <td>${fmtPct(ltv)}</td>
-              <td>${p.apy != null ? fmtPct(p.apy) : '-'}</td>
-              <td><span class="status-badge ${statusClass}">${escHtml(statusLabel)}</span></td>
+              <td>${escHtml(displayAddr(p.address, shorten(p.address || '', 8)))}</td>
+              <td>${escHtml(p.principalTicker || '?')}</td>
+              <td>${fmtMoney(p.collateralValueUSD)} <span class="tooltip">${escHtml(p.collateralTicker || '')}</span></td>
+              <td>${fmtMoney(p.totalOwedUSD)} <span class="tooltip">${escHtml(p.principalTicker || '')}</span></td>
+              <td>${fmtRatio(ltv)}</td>
+              <td>${fmtRatio(p.interestRate)}</td>
+              <td><span class="status-badge status-${status}">${escHtml(status.replace('_', ' '))}</span></td>
             </tr>`;
         }).join('')}
       </tbody>
@@ -418,44 +449,34 @@ function renderSurfPositions() {
 
 function renderSurfPoolApys() {
   const container = $('#surfPoolApys');
-  const pools = state.surfData?.poolApys || state.surfData?.pools || [];
-  if (!pools || pools.length === 0) { container.innerHTML = ''; return; }
+  const pools = [...(state.surfData?.pools || [])]
+    .filter(p => (p.totalSupplied || 0) > 0)
+    .sort((a, b) => (b.supplyApyTotal || 0) - (a.supplyApyTotal || 0))
+    .slice(0, 12);
+  if (pools.length === 0) { container.innerHTML = ''; return; }
 
   container.innerHTML = `
     <div class="apy-grid">
-      ${pools.map(p => {
-        const apyParts = p.apyBreakdown || [];
-        const totalApy = p.totalApy || p.apy || 0;
-        return `
+      ${pools.map(p => `
           <div class="apy-card">
-            <div class="apy-card-title">${escHtml(p.name || p.id || 'Pool')}</div>
+            <div class="apy-card-title">${escHtml(p.asset?.ticker || '?')}</div>
             <div class="apy-row">
-              <span class="apy-label">Total APY</span>
-              <span class="apy-value pos">${fmtPct(totalApy)}</span>
+              <span class="apy-label">Supply APY</span>
+              <span class="apy-value pos">${fmtRatio(p.supplyApyTotal)}</span>
             </div>
-            ${apyParts.map(part => `
-              <div class="apy-row">
-                <span class="apy-label">${escHtml(part.label)}</span>
-                <span class="apy-value ${(part.value || 0) >= 0 ? 'pos' : 'neg'}">${fmtPct(part.value)}</span>
-              </div>
-            `).join('')}
-            ${p.supplyApy != null ? `
-              <div class="apy-row">
-                <span class="apy-label">Supply APY</span>
-                <span class="apy-value pos">${fmtPct(p.supplyApy)}</span>
-              </div>` : ''}
-            ${p.borrowApy != null ? `
-              <div class="apy-row">
-                <span class="apy-label">Borrow APY</span>
-                <span class="apy-value pos">${fmtPct(p.borrowApy)}</span>
-              </div>` : ''}
-            ${p.rewardApy != null ? `
-              <div class="apy-row">
-                <span class="apy-label">Reward APY</span>
-                <span class="apy-value pos">${fmtPct(p.rewardApy)}</span>
-              </div>` : ''}
-          </div>`;
-      }).join('')}
+            <div class="apy-row">
+              <span class="apy-label">Borrow APR</span>
+              <span class="apy-value">${fmtRatio(p.borrowApr)}</span>
+            </div>
+            <div class="apy-row">
+              <span class="apy-label">Utilization</span>
+              <span class="apy-value">${fmtRatio(p.utilizationRate)}</span>
+            </div>
+            <div class="apy-row">
+              <span class="apy-label">Max LTV</span>
+              <span class="apy-value">${fmtRatio(p.maxBorrowLTV)}</span>
+            </div>
+          </div>`).join('')}
     </div>`;
 }
 
@@ -463,8 +484,9 @@ function renderSurfPoolApys() {
 
 function renderPoolDeepDive() {
   const container = $('#poolDeepDive');
-  const pools = state.surfData?.pools || [];
-  if (!pools || pools.length === 0) {
+  const pools = [...(state.surfData?.pools || [])]
+    .sort((a, b) => (b.totalSuppliedUSD || 0) - (a.totalSuppliedUSD || 0));
+  if (pools.length === 0) {
     container.innerHTML = '<div class="empty-state"><p>No pool data available.</p></div>';
     return;
   }
@@ -472,53 +494,178 @@ function renderPoolDeepDive() {
     <div class="pool-card">
       <div class="pool-card-header">
         <div class="pool-icon-pile">
-          ${(p.icons || []).slice(0, 2).map(icon => `<img class="pool-icon" src="${escHtml(icon)}" alt="">`).join('') || '<div class="pool-icon" style="background:var(--surface2)"></div>'}
+          <div class="pool-icon" style="display:flex;align-items:center;justify-content:center;font-size:0.6rem;background:var(--surface2)">${escHtml((p.asset?.ticker || '?').slice(0, 4))}</div>
         </div>
-        <span class="pool-card-title">${escHtml(p.name || p.id || 'Pool')}</span>
-        <span class="pool-metric-val">${fmtPct(p.apy || 0)}</span>
+        <span class="pool-card-title">${escHtml(p.asset?.ticker || '?')}</span>
+        <span class="pool-metric-val">${fmtRatio(p.supplyApyTotal)}</span>
       </div>
       <div class="pool-card-body">
         <div class="pool-metric">
-          <span class="pool-metric-label">TVL</span>
-          <span class="pool-metric-val">${fmtUSD(p.tvl)}</span>
-          <span class="pool-metric-sub">${fmtADA(p.tvlAda || 0)}</span>
-        </div>
-        <div class="pool-metric">
           <span class="pool-metric-label">Supplied</span>
-          <span class="pool-metric-val">${fmtUSD(p.supplied)}</span>
+          <span class="pool-metric-val">${fmtMoney(p.totalSuppliedUSD)}</span>
         </div>
         <div class="pool-metric">
           <span class="pool-metric-label">Borrowed</span>
-          <span class="pool-metric-val">${fmtUSD(p.borrowed)}</span>
+          <span class="pool-metric-val">${fmtMoney(p.totalBorrowedUSD)}</span>
         </div>
         <div class="pool-metric">
           <span class="pool-metric-label">Utilization</span>
-          <span class="pool-metric-val">${fmtPct(p.utilization)}</span>
+          <span class="pool-metric-val">${fmtRatio(p.utilizationRate)}</span>
         </div>
         <div class="pool-metric">
-          <span class="pool-metric-label">LTV</span>
-          <span class="pool-metric-val">${fmtPct(p.maxLtv)}</span>
-          <span class="pool-metric-sub">Max</span>
+          <span class="pool-metric-label">Supply APY</span>
+          <span class="pool-metric-val">${fmtRatio(p.supplyApyTotal)}</span>
         </div>
-        ${p.liquidationThreshold != null ? `
         <div class="pool-metric">
-          <span class="pool-metric-label">Liquidation</span>
-          <span class="pool-metric-val">${fmtPct(p.liquidationThreshold)}</span>
-          <span class="pool-metric-sub">Threshold</span>
-        </div>` : ''}
-        ${p.reserveFactor != null ? `
+          <span class="pool-metric-label">Borrow APR</span>
+          <span class="pool-metric-val">${fmtRatio(p.borrowApr)}</span>
+        </div>
         <div class="pool-metric">
-          <span class="pool-metric-label">Reserve</span>
-          <span class="pool-metric-val">${fmtPct(p.reserveFactor)}</span>
-          <span class="pool-metric-sub">Factor</span>
-        </div>` : ''}
+          <span class="pool-metric-label">Max LTV</span>
+          <span class="pool-metric-val">${fmtRatio(p.maxBorrowLTV)}</span>
+          <span class="pool-metric-sub">Liq ${fmtRatio(p.liquidationThresholdLTV)}</span>
+        </div>
+        <div class="pool-metric">
+          <span class="pool-metric-label">Reserve Factor</span>
+          <span class="pool-metric-val">${fmtRatio(p.reserveFactor)}</span>
+        </div>
+        <div class="pool-metric">
+          <span class="pool-metric-label">Collateral</span>
+          <span class="pool-metric-val" style="font-size:0.75rem">${escHtml((p.collateralAssets || []).map(c => c.ticker).join(', ') || '—')}</span>
+        </div>
       </div>
     </div>`).join('');
 }
 
 /* ---------- Analytics ---------- */
 
-function renderAnalytics() {
+async function loadGraphData() {
+  const FRESH_MS = 5 * 60 * 1000;
+  if (state.graphRaw && Date.now() - state.graphFetchedAt < FRESH_MS) return state.graphRaw;
+  let snapshots = [];
+  let poolSnapshots = [];
+  try {
+    const [protoRes, poolRes] = await Promise.all([
+      fetch('/api/graph?type=protocol'),
+      fetch('/api/graph?type=pools'),
+    ]);
+    if (protoRes.ok) {
+      const proto = await protoRes.json();
+      snapshots = Array.isArray(proto?.snapshots) ? proto.snapshots : [];
+    }
+    if (poolRes.ok) {
+      const pools = await poolRes.json();
+      poolSnapshots = Array.isArray(pools) ? pools : [];
+    }
+  } catch {}
+  state.graphRaw = { snapshots, poolSnapshots };
+  state.graphFetchedAt = Date.now();
+  return state.graphRaw;
+}
+
+function rangeCutoff() {
+  const now = Date.now();
+  if (state.chartRange === '24h') return now - 864e5;
+  if (state.chartRange === '7d') return now - 7 * 864e5;
+  if (state.chartRange === '30d') return now - 30 * 864e5;
+  return 0;
+}
+
+function snapshotLabel(iso) {
+  const dt = new Date(iso);
+  if (state.chartRange === '24h' || state.chartRange === '7d') {
+    return dt.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit' });
+  }
+  return dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+// Reshape /api/graph rows into the series the chart renderers expect.
+function buildAnalytics(raw) {
+  const adaPrice = state.surfData?.summary?.adaPrice || 0;
+  const scale = (usd) => (state.currency === 'ada' && adaPrice > 0 ? (usd || 0) / adaPrice : (usd || 0));
+  const cutoff = rangeCutoff();
+  const rows = (raw.snapshots || [])
+    .filter(r => new Date(r.snapshot_at).getTime() >= cutoff)
+    .sort((a, b) => new Date(a.snapshot_at) - new Date(b.snapshot_at));
+  if (rows.length === 0) return null;
+
+  const labels = rows.map(r => snapshotLabel(r.snapshot_at));
+  const first = rows[0];
+  const last = rows[rows.length - 1];
+  const tvlOf = (r) => scale((r.total_supplied_usd || 0) + (r.total_collateral_usd || 0) - (r.total_borrowed_usd || 0));
+  const firstTvl = tvlOf(first);
+  const lastTvl = tvlOf(last);
+
+  // latest snapshot per pool, for the composition charts
+  const latestPerPool = new Map();
+  for (const r of raw.poolSnapshots || []) {
+    const t = new Date(r.snapshot_at).getTime();
+    if (Number.isNaN(t) || t < cutoff) continue;
+    const prev = latestPerPool.get(r.pool_id);
+    if (!prev || t > prev.t) latestPerPool.set(r.pool_id, { t, row: r });
+  }
+  const byTicker = new Map();
+  for (const { row } of latestPerPool.values()) {
+    const ticker = row.ticker || '?';
+    const agg = byTicker.get(ticker) || { supply: 0, borrow: 0 };
+    agg.supply += scale(row.total_supplied_usd);
+    agg.borrow += scale(row.total_borrowed_usd);
+    byTicker.set(ticker, agg);
+  }
+  const ranked = [...byTicker.entries()].sort((a, b) => b[1].supply - a[1].supply);
+  const top = ranked.slice(0, 7);
+  const rest = ranked.slice(7);
+  const compLabels = top.map(([ticker]) => ticker);
+  const compValues = top.map(([, v]) => v.supply);
+  if (rest.length > 0) {
+    compLabels.push('Other');
+    compValues.push(rest.reduce((s, [, v]) => s + v.supply, 0));
+  }
+
+  return {
+    summary: {
+      tvl: lastTvl,
+      totalSupplied: scale(last.total_supplied_usd),
+      totalBorrowed: scale(last.total_borrowed_usd),
+      activeLoans: last.total_positions || 0,
+      avgLtv: (last.avg_ltv || 0) * 100,
+      avgApr: (last.avg_borrow_apr || 0) * 100,
+      tvlChange: firstTvl > 0 ? ((lastTvl - firstTvl) / firstTvl) * 100 : 0,
+    },
+    tvlHistory: { labels, values: rows.map(tvlOf) },
+    tvlComposition: { labels: compLabels, values: compValues },
+    borrowSupplyHistory: {
+      labels,
+      supplied: rows.map(r => scale(r.total_supplied_usd)),
+      borrowed: rows.map(r => scale(r.total_borrowed_usd)),
+    },
+    ltvAprHistory: {
+      labels,
+      ltv: rows.map(r => (r.avg_ltv || 0) * 100),
+      apr: rows.map(r => (r.avg_borrow_apr || 0) * 100),
+    },
+    marketComposition: {
+      labels: compLabels.slice(0, top.length),
+      supply: top.map(([, v]) => v.supply),
+      borrow: top.map(([, v]) => v.borrow),
+    },
+    revenueHistory: {
+      labels,
+      interest: rows.map(r => scale(r.total_unpaid_interest_usd)),
+      liquidation: rows.map(() => 0),
+      fees: rows.map(r => scale(r.total_reserve_usd)),
+    },
+    stakingHistory: null,
+  };
+}
+
+async function renderAnalytics() {
+  state.analyticsData = buildAnalytics(await loadGraphData());
+  Object.keys(CHARTS).forEach(id => { CHARTS[id].destroy(); delete CHARTS[id]; });
+  if (!state.analyticsData) {
+    $('#analyticsSummary').innerHTML = '<div class="empty-state"><strong>No history yet</strong><p>Charts build up once the hourly snapshot cron runs against the database.</p></div>';
+    return;
+  }
   renderAnalyticsSummary();
   renderTvlChart();
   renderTvlCompChart();
@@ -527,11 +674,13 @@ function renderAnalytics() {
   renderMarketCompChart();
   renderRevenueChart();
   renderStakingChart();
+  const stakingCard = $('#stakingChartCard');
+  if (stakingCard) stakingCard.style.display = state.analyticsData.stakingHistory ? '' : 'none';
 }
 
 function renderAnalyticsSummary() {
   const container = $('#analyticsSummary');
-  const d = state.surfData?.analytics;
+  const d = state.analyticsData;
   if (!d) { container.innerHTML = ''; return; }
   const a = d.summary || d;
   const usd = state.currency === 'usd';
@@ -597,7 +746,7 @@ function chartTheme() {
 function renderTvlChart() {
   const ctx = getChartCtx('tvlChart');
   if (!ctx) return;
-  const data = state.surfData?.analytics?.tvlHistory;
+  const data = state.analyticsData?.tvlHistory;
   if (!data) return;
   const t = chartTheme();
   CHARTS.tvlChart = new Chart(ctx, {
@@ -610,7 +759,7 @@ function renderTvlChart() {
 function renderTvlCompChart() {
   const ctx = getChartCtx('tvlCompChart');
   if (!ctx) return;
-  const data = state.surfData?.analytics?.tvlComposition;
+  const data = state.analyticsData?.tvlComposition;
   if (!data) return;
   const colors = [chartColors.primary, chartColors.secondary, chartColors.green, chartColors.yellow, chartColors.purple, chartColors.pink, chartColors.blue];
   CHARTS.tvlCompChart = new Chart(ctx, {
@@ -623,7 +772,7 @@ function renderTvlCompChart() {
 function renderBorrowSupplyChart() {
   const ctx = getChartCtx('borrowSupplyChart');
   if (!ctx) return;
-  const data = state.surfData?.analytics?.borrowSupplyHistory;
+  const data = state.analyticsData?.borrowSupplyHistory;
   if (!data) return;
   const t = chartTheme();
   CHARTS.borrowSupplyChart = new Chart(ctx, {
@@ -642,7 +791,7 @@ function renderBorrowSupplyChart() {
 function renderLtvAprChart() {
   const ctx = getChartCtx('ltvAprChart');
   if (!ctx) return;
-  const data = state.surfData?.analytics?.ltvAprHistory;
+  const data = state.analyticsData?.ltvAprHistory;
   if (!data) return;
   const t = chartTheme();
   CHARTS.ltvAprChart = new Chart(ctx, {
@@ -669,7 +818,7 @@ function renderLtvAprChart() {
 function renderMarketCompChart() {
   const ctx = getChartCtx('marketCompChart');
   if (!ctx) return;
-  const data = state.surfData?.analytics?.marketComposition;
+  const data = state.analyticsData?.marketComposition;
   if (!data) return;
   const colors = [chartColors.primary, chartColors.secondary, chartColors.green, chartColors.yellow, chartColors.purple, chartColors.pink, chartColors.blue, chartColors.orange];
   CHARTS.marketCompChart = new Chart(ctx, {
@@ -688,7 +837,7 @@ function renderMarketCompChart() {
 function renderRevenueChart() {
   const ctx = getChartCtx('revenueChart');
   if (!ctx) return;
-  const data = state.surfData?.analytics?.revenueHistory;
+  const data = state.analyticsData?.revenueHistory;
   if (!data) return;
   const t = chartTheme();
   CHARTS.revenueChart = new Chart(ctx, {
@@ -708,7 +857,7 @@ function renderRevenueChart() {
 function renderStakingChart() {
   const ctx = getChartCtx('stakingChart');
   if (!ctx) return;
-  const data = state.surfData?.analytics?.stakingHistory;
+  const data = state.analyticsData?.stakingHistory;
   if (!data) return;
   const t = chartTheme();
   CHARTS.stakingChart = new Chart(ctx, {
@@ -737,19 +886,24 @@ function renderStakingChart() {
 async function fetchActivity(page = 0) {
   try {
     const params = new URLSearchParams();
-    params.set('page', page);
-    params.set('pageSize', state.activityPageSize);
+    params.set('page', page + 1);
+    params.set('per_page', state.activityPageSize);
     if (state.filterActivityType) params.set('type', state.filterActivityType);
     if (state.filterActivityAddr) params.set('address', state.filterActivityAddr);
-    const res = await fetch('/api/surf-activity?' + params.toString());
-    if (!res.ok) throw new Error('Failed to fetch activity');
-    const data = await res.json();
+    const res = await fetch('/api/activity?' + params.toString());
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || 'Failed to fetch activity');
+    }
+    const payload = await res.json();
     state.activityPage = page;
-    state.activityTotal = data.total || 0;
-    renderActivity(data.items || []);
+    state.activityTotal = payload.total || 0;
+    state.activityPerPage = payload.per_page || state.activityPageSize;
+    renderActivity(payload.data || []);
     renderActivityPagination();
   } catch (e) {
     $('#activityList').innerHTML = '<div class="empty-state"><strong>Could not load activity</strong><p>' + escHtml(e.message) + '</p></div>';
+    $('#activityPagination').innerHTML = '';
   }
 }
 
@@ -760,23 +914,28 @@ function renderActivity(items) {
     return;
   }
   container.innerHTML = items.map(a => {
-    const amount = a.amount ? (state.currency === 'usd' ? fmtUSD(a.amount) : fmtADA(a.amountAda || a.amount)) : '';
+    const type = a.activity_type || '?';
+    const amount = a.amount_fmt ? (a.amount_fmt + ' ' + (a.asset_ticker || '')).trim() : '';
+    const link = a.tx_hash ? 'https://cardanoscan.io/transaction/' + a.tx_hash : '';
+    const time = escHtml(a.time_ago || '');
     return `
       <div class="activity-item">
-        <span class="activity-type ${a.type}">${escHtml(a.type)}</span>
+        <span class="activity-type ${escHtml(type.toLowerCase().replace(/\s+/g, '_'))}">${escHtml(type)}</span>
         <div class="activity-detail">
-          <strong>${amount}</strong>
-          ${a.poolName ? 'in ' + escHtml(a.poolName) : ''}
-          ${a.address ? '<div class="activity-addr">' + escHtml(shorten(a.address, 8)) + '</div>' : ''}
+          <strong>${escHtml(amount || '—')}</strong>
+          ${a.pool_ticker && a.pool_ticker !== a.asset_ticker ? ' on ' + escHtml(a.pool_ticker) : ''}
+          ${a.fee_fmt && a.fee_fmt !== '—' ? '<div class="activity-addr">fee ' + escHtml(a.fee_fmt) + '</div>' : ''}
+          ${a.address ? '<div class="activity-addr">' + escHtml(displayAddr(a.address, a.address_short || shorten(a.address, 8))) + '</div>' : ''}
         </div>
-        <span class="activity-time">${a.timestamp ? new Date(a.timestamp).toLocaleString() : ''}</span>
+        <span class="activity-time">${link ? `<a href="${link}" target="_blank" rel="noopener">${time}</a>` : time}</span>
       </div>`;
   }).join('');
 }
 
 function renderActivityPagination() {
   const container = $('#activityPagination');
-  const totalPages = Math.ceil(state.activityTotal / state.activityPageSize);
+  const perPage = state.activityPerPage || state.activityPageSize;
+  const totalPages = Math.ceil(state.activityTotal / perPage);
   const current = state.activityPage;
   if (totalPages <= 1) { container.innerHTML = ''; return; }
   const pages = [];
@@ -798,98 +957,77 @@ function renderActivityPagination() {
 
 function renderSurfTokenStats() {
   const d = state.surfData?.token;
-  if (!d) return;
   renderSurfTokenSummary(d);
   renderSurfTokenDetails(d);
-  fetchTokenHolders();
+  const holders = d?.topHolders || [];
+  renderTokenHolders(holders);
+  renderTokenDistChart(holders);
 }
 
 function renderSurfTokenSummary(d) {
   const container = $('#surfTokenSummary');
+  const s = state.surfData?.summary || {};
+  const staking = state.surfData?.staking?.info || {};
+  const staked = (staking.totalLiveStake || 0) / 1e6;
+  const supply = d?.totalSupply || 0;
   container.innerHTML = `
     <div class="summary-grid">
       <div class="summary-card">
         <div class="summary-label">SURF Price</div>
-        <div class="summary-value">${fmtUSD(d.price)}</div>
-        <div class="summary-sub">${fmtADA(d.priceAda)}</div>
+        <div class="summary-value">${fmtUSD(s.surfPriceUSD)}</div>
+        <div class="summary-sub">${fmtADA(s.surfPrice || 0)}</div>
       </div>
       <div class="summary-card">
         <div class="summary-label">Market Cap</div>
-        <div class="summary-value">${fmtUSD(d.marketCap)}</div>
+        <div class="summary-value">${supply ? fmtUSD((s.surfPriceUSD || 0) * supply) : '—'}</div>
       </div>
       <div class="summary-card">
         <div class="summary-label">Total Supply</div>
-        <div class="summary-value">${fmtShort(d.totalSupply)}</div>
-      </div>
-      <div class="summary-card">
-        <div class="summary-label">Circulating</div>
-        <div class="summary-value">${fmtShort(d.circulatingSupply)}</div>
+        <div class="summary-value">${supply ? fmtShort(supply) : '—'}</div>
       </div>
       <div class="summary-card">
         <div class="summary-label">Staked</div>
-        <div class="summary-value">${fmtShort(d.staked)}</div>
-        <div class="summary-sub">${fmtPct(d.stakePct)} of supply</div>
+        <div class="summary-value">${fmtShort(staked)}</div>
+        <div class="summary-sub">${supply ? fmtPct((staked / supply) * 100) + ' of supply' : 'live stake'}</div>
       </div>
       <div class="summary-card">
         <div class="summary-label">Holders</div>
-        <div class="summary-value">${d.holders || 0}</div>
+        <div class="summary-value">${d?.holders != null ? d.holders : '—'}</div>
       </div>
     </div>`;
 }
 
 function renderSurfTokenDetails(d) {
   const container = $('#surfTokenDetails');
-  const details = d.details || {};
+  const t = d || {};
+  const s = state.surfData?.summary || {};
   container.innerHTML = `
     <div class="token-detail-grid">
       <div class="token-detail-card">
-        <div class="token-detail-label">Token Name</div>
-        <div class="token-detail-value">${escHtml(d.name || 'SURF')}</div>
+        <div class="token-detail-label">Token</div>
+        <div class="token-detail-value">${escHtml(t.name || 'SURF')}</div>
       </div>
       <div class="token-detail-card">
         <div class="token-detail-label">Ticker</div>
-        <div class="token-detail-value">${escHtml(d.ticker || 'SURF')}</div>
+        <div class="token-detail-value">${escHtml(t.ticker || 'SURF')}</div>
       </div>
       <div class="token-detail-card">
         <div class="token-detail-label">Decimals</div>
-        <div class="token-detail-value">${d.decimals != null ? d.decimals : 6}</div>
+        <div class="token-detail-value">${t.decimals != null ? t.decimals : 6}</div>
       </div>
       <div class="token-detail-card">
         <div class="token-detail-label">Policy ID</div>
-        <div class="token-detail-value" style="font-size:0.7rem">${escHtml(shorten(d.policyId || details.policyId || '', 12))}</div>
+        <div class="token-detail-value" style="font-size:0.7rem">${escHtml(shorten(t.policyId || '', 12))}</div>
       </div>
-      ${d.website ? `
       <div class="token-detail-card">
-        <div class="token-detail-label">Website</div>
-        <div class="token-detail-value" style="font-size:0.7rem"><a href="${escHtml(d.website)}" target="_blank" rel="noopener" style="color:var(--primary)">${escHtml(d.website)}</a></div>
-      </div>` : ''}
-      <div class="token-detail-card">
-        <div class="token-detail-label">24h Volume</div>
-        <div class="token-detail-value">${fmtUSD(d.volume24h || 0)}</div>
+        <div class="token-detail-label">ADA Price</div>
+        <div class="token-detail-value">${fmtADA(s.surfPrice || 0)}</div>
       </div>
-      ${d.allTimeHigh != null ? `
       <div class="token-detail-card">
-        <div class="token-detail-label">All-Time High</div>
-        <div class="token-detail-value">${fmtUSD(d.allTimeHigh)}</div>
-      </div>` : ''}
-      ${d.allTimeLow != null ? `
-      <div class="token-detail-card">
-        <div class="token-detail-label">All-Time Low</div>
-        <div class="token-detail-value">${fmtUSD(d.allTimeLow)}</div>
-      </div>` : ''}
+        <div class="token-detail-label">Staking Period</div>
+        <div class="token-detail-value">${(state.surfData?.staking?.info?.stakingPeriodInDays || 0) + ' days'}</div>
+      </div>
     </div>`;
-}
-
-async function fetchTokenHolders() {
-  try {
-    const res = await fetch('/api/surf-holders');
-    if (!res.ok) throw new Error('Failed to fetch holders');
-    const data = await res.json();
-    renderTokenHolders(data.holders || []);
-    renderTokenDistChart(data.holders || []);
-  } catch (e) {
-    $('#holderTableWrap').innerHTML = '<div class="empty-state"><p>Could not load holders.</p></div>';
-  }
 }
 
 function renderTokenHolders(holders) {

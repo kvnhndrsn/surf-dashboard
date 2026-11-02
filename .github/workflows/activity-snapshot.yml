@@ -12,4 +12,4 @@ jobs:
       - name: Call activity snapshot API
         run: |
           curl -sS --max-time 60 \
-            "https://cntpoll.vercel.app/api/activity-snapshot?key=${{ secrets.SNAPSHOT_KEY }}"
+            "https://surf-dashboard-hazel.vercel.app/api/activity-snapshot?key=${{ secrets.SNAPSHOT_KEY }}"
