@@ -98,6 +98,13 @@ function accruedInterestUsd(pos) {
   return ((pos.accruedInterest || 0) / Math.pow(10, decimals)) * (pos.principalPriceUSD || 0);
 }
 
+// Accrued interest is reported in ADA, independent of the USD/ADA toggle.
+function accruedInterestAda(pos) {
+  const adaPrice = state.surfData?.summary?.adaPrice || 0;
+  const usd = accruedInterestUsd(pos);
+  return adaPrice > 0 ? usd / adaPrice : 0;
+}
+
 // Health = (Collateral Value x Collateral Factor) / (Borrowed + Accrued Interest)
 function positionHealth(pos) {
   const cf = collateralFactor(pos);
@@ -316,7 +323,7 @@ const POSITION_SORTS = {
   address: p => p.address || '',
   collateral: p => p.collateralValueUSD || 0,
   borrowed: p => p.principalValueUSD || 0,
-  accrued: p => accruedInterestUsd(p),
+  accrued: p => accruedInterestAda(p),
   ltv: p => p.ltv || 0,
   health: p => positionHealth(p) ?? 999,
   rate: p => p.interestRate || 0,
@@ -363,7 +370,7 @@ function renderSurfPositions() {
           <th data-sort="address">Address<span class="sort-arrow">${sortArrow('address')}</span></th>
           <th data-sort="collateral">Collateral<span class="sort-arrow">${sortArrow('collateral')}</span></th>
           <th data-sort="borrowed">Debt<span class="sort-arrow">${sortArrow('borrowed')}</span></th>
-          <th data-sort="accrued">Accrued<span class="sort-arrow">${sortArrow('accrued')}</span></th>
+          <th data-sort="accrued">Accrued (ADA)<span class="sort-arrow">${sortArrow('accrued')}</span></th>
           <th data-sort="ltv">LTV<span class="sort-arrow">${sortArrow('ltv')}</span></th>
           <th data-sort="health">Health<span class="sort-arrow">${sortArrow('health')}</span></th>
           <th data-sort="rate">Rate<span class="sort-arrow">${sortArrow('rate')}</span></th>
@@ -379,13 +386,13 @@ function renderSurfPositions() {
           const rowClass = ltv >= 0.9 ? 'row-danger' : status === 'at_risk' ? 'row-warning' : '';
           const healthTitle = health == null
             ? 'Collateral factor unavailable for this pool'
-            : `(${fmtMoney(p.collateralValueUSD)} x ${fmtRatio(cf)}) / (${fmtMoney(p.principalValueUSD)} debt + ${fmtMoney(accruedInterestUsd(p))} accrued)`;
+            : `Health = (Collateral x ${fmtRatio(cf)}) / (Debt + Accrued interest)`;
           return `
             <tr class="${rowClass}">
               <td>${escHtml(displayAddr(p.address, shorten(p.address || '', 8)))}</td>
               <td>${fmtMoney(p.collateralValueUSD)} ${tokenCell(p.collateralPolicyId, p.collateralAssetName, p.collateralTicker)}</td>
               <td>${fmtMoney(p.principalValueUSD)} ${tokenCell(p.principalPolicyId, p.principalAssetName, p.principalTicker)}</td>
-              <td class="txt-muted">${fmtMoney(accruedInterestUsd(p))}</td>
+              <td class="txt-muted">${fmtADA(accruedInterestAda(p))}</td>
               <td>${fmtRatio(ltv)}</td>
               <td><span class="health ${healthClass(health)}" title="${escHtml(healthTitle)}">${health == null ? '—' : health.toFixed(2)}</span></td>
               <td>${fmtRatio(p.interestRate)}</td>
