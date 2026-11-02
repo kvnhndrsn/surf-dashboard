@@ -419,6 +419,7 @@ tr.row-danger { background: var(--danger-bg); }
 .pool-icon-pile { display: flex; flex-shrink: 0; }
 .pool-icon-pile .pool-icon { margin-right: -8px; }
 .pool-icon-pile .pool-icon:last-child { margin-right: 0; }
+.token-icon-sm { width: 14px; height: 14px; border-radius: 50%; vertical-align: -2px; margin-right: 4px; }
 
 .pool-card-title { font-size: 0.82rem; font-weight: 800; color: var(--text); flex: 1; }
 

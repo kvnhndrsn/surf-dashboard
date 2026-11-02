@@ -131,23 +131,40 @@ function displayAddr(address, fallback) {
   return fallback || shorten(address, 6);
 }
 
+const ADA_LOGO = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#0033ad"/><text x="16" y="23" font-size="18" text-anchor="middle" fill="#fff" font-family="sans-serif">₳</text></svg>');
+
 const tokenIconCache = new Map();
 
+// Cardano Token Registry: /metadata/<policyId><assetName> returns a base64 logo.
 async function fetchTokenIcon(policyId, assetName) {
-  const key = (policyId || '') + (assetName || '');
-  if (tokenIconCache.has(key)) return tokenIconCache.get(key);
+  if (!policyId || !assetName) return null;
+  const subject = policyId + assetName;
+  if (tokenIconCache.has(subject)) return tokenIconCache.get(subject);
   try {
-    const url = 'https://tokens.cardano.org/api/asset/' + policyId + (assetName ? '.' + assetName : '');
-    const res = await fetch(url);
+    const res = await fetch('https://tokens.cardano.org/metadata/' + subject);
     if (!res.ok) throw new Error('not found');
     const data = await res.json();
-    const icon = data.logo || data.icon || null;
-    tokenIconCache.set(key, icon);
+    const raw = data?.logo?.value || null;
+    const icon = raw ? 'data:image/png;base64,' + raw : null;
+    tokenIconCache.set(subject, icon);
     return icon;
   } catch {
-    tokenIconCache.set(key, null);
+    tokenIconCache.set(subject, null);
     return null;
   }
+}
+
+function tokenIcon(policyId, assetName) {
+  if (!policyId) return ADA_LOGO;
+  return tokenIconCache.get(policyId + (assetName || '')) || null;
+}
+
+async function prefetchTokenIcons(assets) {
+  const unique = new Map();
+  for (const a of assets) {
+    if (a && a.policyId && a.assetName) unique.set(a.policyId + a.assetName, a);
+  }
+  await Promise.all([...unique.values()].map(a => fetchTokenIcon(a.policyId, a.assetName)));
 }
 
 /* ---------- Theme ---------- */
@@ -293,8 +310,25 @@ async function fetchSurfDashboard() {
     renderPoolDeepDive();
     renderAnalytics();
     renderSurfTokenStats();
+
+    const assets = [];
+    for (const p of state.surfData.pools || []) {
+      assets.push(p.asset);
+      for (const c of p.collateralAssets || []) assets.push(c);
+    }
+    for (const p of state.surfData.positions || []) {
+      assets.push({ policyId: p.principalPolicyId, assetName: p.principalAssetName });
+      assets.push({ policyId: p.collateralPolicyId, assetName: p.collateralAssetName });
+    }
     const addrs = (state.surfData.positions || []).slice(0, 100).map(p => p.address).filter(Boolean);
-    prefetchHandles(addrs).then(() => renderSurfPositions());
+    Promise.all([
+      prefetchTokenIcons(assets).then(() => {
+        renderSurfPoolApys();
+        renderPoolDeepDive();
+        renderSurfPositions();
+      }),
+      prefetchHandles(addrs).then(() => renderSurfPositions()),
+    ]);
   } catch (e) {
     console.error(e);
     $('#surfSummary').innerHTML = '<div class="empty-state"><strong>Could not load dashboard</strong><p>' + escHtml(e.message) + '</p></div>';
@@ -422,9 +456,9 @@ function renderSurfPositions() {
           return `
             <tr class="${rowClass}">
               <td>${escHtml(displayAddr(p.address, shorten(p.address || '', 8)))}</td>
-              <td>${escHtml(p.principalTicker || '?')}</td>
-              <td>${fmtMoney(p.collateralValueUSD)} <span class="tooltip">${escHtml(p.collateralTicker || '')}</span></td>
-              <td>${fmtMoney(p.totalOwedUSD)} <span class="tooltip">${escHtml(p.principalTicker || '')}</span></td>
+              <td>${tokenCell(p.principalPolicyId, p.principalAssetName, p.principalTicker || '?')}</td>
+              <td>${fmtMoney(p.collateralValueUSD)} ${tokenCell(p.collateralPolicyId, p.collateralAssetName, p.collateralTicker)}</td>
+              <td>${fmtMoney(p.totalOwedUSD)} ${tokenCell(p.principalPolicyId, p.principalAssetName, p.principalTicker)}</td>
               <td>${fmtRatio(ltv)}</td>
               <td>${fmtRatio(p.interestRate)}</td>
               <td><span class="status-badge status-${status}">${escHtml(status.replace('_', ' '))}</span></td>
@@ -457,9 +491,11 @@ function renderSurfPoolApys() {
 
   container.innerHTML = `
     <div class="apy-grid">
-      ${pools.map(p => `
+      ${pools.map(p => {
+        const icon = assetIcon(p.asset);
+        return `
           <div class="apy-card">
-            <div class="apy-card-title">${escHtml(p.asset?.ticker || '?')}</div>
+            <div class="apy-card-title">${icon ? `<img class="token-icon-sm" src="${escHtml(icon)}" alt="">` : ''}${escHtml(p.asset?.ticker || '?')}</div>
             <div class="apy-row">
               <span class="apy-label">Supply APY</span>
               <span class="apy-value pos">${fmtRatio(p.supplyApyTotal)}</span>
@@ -476,11 +512,39 @@ function renderSurfPoolApys() {
               <span class="apy-label">Max LTV</span>
               <span class="apy-value">${fmtRatio(p.maxBorrowLTV)}</span>
             </div>
-          </div>`).join('')}
+          </div>`;
+      }).join('')}
     </div>`;
 }
 
 /* ---------- Pools ---------- */
+
+function assetIcon(asset) {
+  if (!asset || !asset.policyId) return ADA_LOGO;
+  return tokenIcon(asset.policyId, asset.assetName);
+}
+
+function tokenCell(policyId, assetName, ticker) {
+  const icon = tokenIcon(policyId, assetName);
+  return (icon ? `<img class="token-icon-sm" src="${escHtml(icon)}" alt="">` : '') + escHtml(ticker || '');
+}
+
+function poolLabel(p) {
+  const base = p.asset?.ticker || '?';
+  const colls = (p.collateralAssets || []).map(c => c.ticker).filter(Boolean);
+  if (colls.length === 0) return base;
+  return base + '/' + colls.slice(0, 2).join('+') + (colls.length > 2 ? '…' : '');
+}
+
+function poolIconPile(p) {
+  const icons = [assetIcon(p.asset)];
+  for (const c of (p.collateralAssets || []).slice(0, 2)) icons.push(assetIcon(c));
+  const imgs = icons.filter(Boolean).map(src => `<img class="pool-icon" src="${escHtml(src)}" alt="">`);
+  if (imgs.length === 0) {
+    return `<div class="pool-icon-pile"><div class="pool-icon" style="display:flex;align-items:center;justify-content:center;font-size:0.6rem;background:var(--surface2)">${escHtml((p.asset?.ticker || '?').slice(0, 4))}</div></div>`;
+  }
+  return `<span class="pool-icon-pile">${imgs.join('')}</span>`;
+}
 
 function renderPoolDeepDive() {
   const container = $('#poolDeepDive');
@@ -493,10 +557,8 @@ function renderPoolDeepDive() {
   container.innerHTML = pools.map(p => `
     <div class="pool-card">
       <div class="pool-card-header">
-        <div class="pool-icon-pile">
-          <div class="pool-icon" style="display:flex;align-items:center;justify-content:center;font-size:0.6rem;background:var(--surface2)">${escHtml((p.asset?.ticker || '?').slice(0, 4))}</div>
-        </div>
-        <span class="pool-card-title">${escHtml(p.asset?.ticker || '?')}</span>
+        ${poolIconPile(p)}
+        <span class="pool-card-title">${escHtml(poolLabel(p))}</span>
         <span class="pool-metric-val">${fmtRatio(p.supplyApyTotal)}</span>
       </div>
       <div class="pool-card-body">
