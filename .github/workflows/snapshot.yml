@@ -1,0 +1,15 @@
+name: Record SURF Snapshot
+
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call snapshot API
+        run: |
+          curl -sS --max-time 60 \
+            "https://cntpoll.vercel.app/api/snapshot?key=${{ secrets.SNAPSHOT_KEY }}"
