@@ -11,53 +11,89 @@ async function surfFetch(path) {
   return res.json();
 }
 
+const HOLDERS_TTL_MS = 5 * 60 * 1000;
+const HOLDERS_PAGE = 1000;
+const HOLDERS_MAX_PAGES = 5;
+let holdersCache = { at: 0, data: null };
+
+// /asset_info is the authoritative supply (25,000,000 SURF); holder pages only
+// add up to what the first few thousand addresses hold.
+async function fetchSurfSupply(koiosUrl) {
+  const info = await koiosPost(koiosUrl + '/asset_info', {
+    _asset_policy: SURF_POLICY,
+    _asset_name: SURF_ASSET,
+  }, 'surf-supply');
+  if (!Array.isArray(info) || !info[0]) return null;
+  return Number(info[0].total_supply) / Math.pow(10, SURF_DECIMALS);
+}
+
+// Koios exposes holders at /asset_addresses (not the old /asset_address_list,
+// which 404s) and reports them as payment_address, paginated 1000 at a time.
 async function fetchSurfHolders(koiosUrl) {
+  if (holdersCache.data && Date.now() - holdersCache.at < HOLDERS_TTL_MS) return holdersCache.data;
   try {
-    const result = await koiosPost(koiosUrl + '/asset_address_list', {
-      _asset_policy: SURF_POLICY,
-      _asset_name: SURF_ASSET,
-    }, 'surf-holders');
-    if (!Array.isArray(result)) return null;
+    const supply = await fetchSurfSupply(koiosUrl);
+    const seen = new Map();
 
-    const holders = result
-      .filter(h => h.quantity && BigInt(h.quantity) > 0n)
-      .map(h => ({ address: h.address, balance: h.quantity }));
-
-    const totalWithDecimals = holders.reduce((s, h) => s + Number(h.balance), 0);
-    const totalTokens = totalWithDecimals / Math.pow(10, SURF_DECIMALS);
-
-    const sorted = holders.sort((a, b) => Number(b.balance) - Number(a.balance));
-    const top10 = sorted.slice(0, 10).map(h => ({
-      address: h.address,
-      balance: Number(h.balance) / Math.pow(10, SURF_DECIMALS),
-      pct: totalTokens > 0 ? (Number(h.balance) / totalWithDecimals) * 100 : 0,
-    }));
-
-    const top10Count = sorted.slice(0, 10).reduce((s, h) => s + Number(h.balance), 0);
-    const balances = sorted.map(h => Number(h.balance));
-    const avgBalance = holders.length > 0 ? totalWithDecimals / holders.length : 0;
-
-    let low = 0, midLow = 0, mid = 0, midHigh = 0, high = 0;
-    for (const bal of balances) {
-      const t = bal / Math.pow(10, SURF_DECIMALS);
-      if (t < 1000) low++;
-      else if (t < 10000) midLow++;
-      else if (t < 100000) mid++;
-      else if (t < 1000000) midHigh++;
-      else high++;
+    for (let page = 0; page < HOLDERS_MAX_PAGES; page++) {
+      const rows = await koiosPost(
+        koiosUrl + '/asset_addresses?limit=' + HOLDERS_PAGE + '&offset=' + page * HOLDERS_PAGE,
+        { _asset_policy: SURF_POLICY, _asset_name: SURF_ASSET },
+        'surf-holders-' + page
+      );
+      if (!Array.isArray(rows) || rows.length === 0) break;
+      for (const row of rows) {
+        const address = row.payment_address || row.address;
+        const quantity = Number(row.quantity || 0);
+        if (!address || !(quantity > 0)) continue;
+        seen.set(address, (seen.get(address) || 0) + quantity);
+      }
+      if (rows.length < HOLDERS_PAGE) break;
     }
 
-    return {
-      holders: holders.length,
-      totalSupply: totalTokens,
+    if (seen.size === 0) {
+      return supply
+        ? { holders: 0, totalSupply: supply, topHolders: [], top10ConcentrationPct: 0, avgBalance: 0, medianBalance: 0, buckets: {} }
+        : null;
+    }
+
+    const divisor = Math.pow(10, SURF_DECIMALS);
+    const ranked = [...seen.entries()]
+      .map(([address, quantity]) => ({ address, balance: quantity / divisor }))
+      .sort((a, b) => b.balance - a.balance);
+
+    const held = ranked.reduce((s, h) => s + h.balance, 0);
+    const totalSupply = supply || held;
+    const top10 = ranked.slice(0, 10).map(h => ({
+      address: h.address,
+      balance: h.balance,
+      pct: totalSupply > 0 ? (h.balance / totalSupply) * 100 : 0,
+    }));
+    const top10Held = ranked.slice(0, 10).reduce((s, h) => s + h.balance, 0);
+
+    const buckets = { under1K: 0, under10K: 0, under100K: 0, under1M: 0, over1M: 0 };
+    for (const h of ranked) {
+      if (h.balance < 1e3) buckets.under1K++;
+      else if (h.balance < 1e4) buckets.under10K++;
+      else if (h.balance < 1e5) buckets.under100K++;
+      else if (h.balance < 1e6) buckets.under1M++;
+      else buckets.over1M++;
+    }
+
+    const balances = ranked.map(h => h.balance).sort((a, b) => a - b);
+    const data = {
+      holders: ranked.length,
+      totalSupply,
       topHolders: top10,
-      top10ConcentrationPct: totalTokens > 0 ? (top10Count / totalWithDecimals) * 100 : 0,
-      avgBalance,
-      medianBalance: balances.length > 0
-        ? [...balances].sort((a, b) => a - b)[Math.floor(balances.length / 2)] / Math.pow(10, SURF_DECIMALS)
-        : 0,
-      buckets: { under1K: low, under10K: midLow, under100K: mid, under1M: midHigh, over1M: high },
+      top10ConcentrationPct: totalSupply > 0 ? (top10Held / totalSupply) * 100 : 0,
+      avgBalance: ranked.length ? held / ranked.length : 0,
+      medianBalance: balances.length ? balances[Math.floor(balances.length / 2)] : 0,
+      buckets,
+      truncated: ranked.length >= HOLDERS_PAGE * HOLDERS_MAX_PAGES,
     };
+
+    holdersCache = { at: Date.now(), data };
+    return data;
   } catch (e) {
     return null;
   }

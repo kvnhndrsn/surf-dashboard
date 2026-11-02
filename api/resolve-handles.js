@@ -41,8 +41,9 @@ export default async function handler(req, res) {
     if (valid.length === 0) return res.json({});
 
     const map = {};
-    const baseUrl = process.env.KOIOS_API_URL || 'https://api.koios.rest/api/v2';
-    const fallbackUrl = 'https://api.koios.rest/api/v1';
+    // v2 does not exist on Koios (404), so try v1 first to avoid a wasted round trip.
+    const baseUrl = process.env.KOIOS_API_URL || 'https://api.koios.rest/api/v1';
+    const fallbackUrl = 'https://api.koios.rest/api/v2';
 
     let data = await fetchAddressAssets(valid, baseUrl);
 

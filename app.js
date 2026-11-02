@@ -962,7 +962,10 @@ async function fetchActivity(page = 0) {
     state.activityPerPage = payload.per_page || state.activityPageSize;
     const items = payload.data || [];
     renderActivity(items);
-    prefetchTokenIcons(activityAssets(items)).then(() => renderActivity(items));
+    Promise.all([
+      prefetchTokenIcons(activityAssets(items)),
+      prefetchHandles(items.map(a => a.address).filter(Boolean).slice(0, 100)),
+    ]).then(() => renderActivity(items));
     renderActivityPagination();
   } catch (e) {
     $('#activityList').innerHTML = '<div class="empty-state"><strong>Could not load activity</strong><p>' + escHtml(e.message) + '</p></div>';
@@ -1056,7 +1059,7 @@ function renderSurfTokenSummary(d) {
       </div>
       <div class="summary-card">
         <div class="summary-label">Holders</div>
-        <div class="summary-value">${d?.holders != null ? d.holders : '—'}</div>
+        <div class="summary-value">${d?.holders != null ? (d.truncated ? fmtNum(d.holders) + '+' : d.holders) : '—'}</div>
       </div>
     </div>`;
 }

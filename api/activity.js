@@ -49,8 +49,8 @@ async function fetchTxFees(txHashes) {
   }
 
   const urls = [
-    process.env.KOIOS_API_URL || 'https://api.koios.rest/api/v2',
-    'https://api.koios.rest/api/v1',
+    process.env.KOIOS_API_URL || 'https://api.koios.rest/api/v1',
+    'https://api.koios.rest/api/v2',
   ];
 
   for (const baseUrl of urls) {
