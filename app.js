@@ -150,12 +150,21 @@ const handleCache = new Map();
 async function prefetchHandles(addresses) {
   const uncached = [...new Set(addresses.filter(a => a && (a.startsWith('addr') || a.startsWith('stake')) && !handleCache.has(a)))];
   if (uncached.length === 0) return;
-  try {
-    const res = await fetch('/api/resolve-handles?addresses=' + encodeURIComponent(uncached.join(',')));
-    if (!res.ok) return;
-    const map = await res.json();
-    for (const [addr, h] of Object.entries(map)) handleCache.set(addr, h);
-  } catch {}
+
+  // 100 addresses is ~10 KB of query string, which proxies reject (414), so ask
+  // in small batches and merge the maps.
+  const BATCH = 25;
+  const batches = [];
+  for (let i = 0; i < uncached.length; i += BATCH) batches.push(uncached.slice(i, i + BATCH));
+
+  await Promise.all(batches.map(async (batch) => {
+    try {
+      const res = await fetch('/api/resolve-handles?addresses=' + encodeURIComponent(batch.join(',')));
+      if (!res.ok) return;
+      const map = await res.json();
+      for (const [addr, h] of Object.entries(map)) handleCache.set(addr, h);
+    } catch {}
+  }));
 }
 
 function displayAddr(address, fallback) {
@@ -1029,6 +1038,10 @@ function renderSurfTokenStats() {
   const holders = d?.topHolders || [];
   renderTokenHolders(holders);
   renderTokenDistChart(holders);
+  prefetchHandles(holders.map(h => h.address)).then(() => {
+    renderTokenHolders(holders);
+    renderTokenDistChart(holders);
+  });
 }
 
 function renderSurfTokenSummary(d) {
@@ -1129,7 +1142,7 @@ function renderTokenHolders(holders) {
         ${sorted.map((h, i) => `
           <tr>
             <td>${i + 1}</td>
-            <td>${escHtml(shorten(h.address, 10))}</td>
+            <td>${escHtml(displayAddr(h.address, shorten(h.address, 10)))}</td>
             <td>${fmtNum(h.balance)}</td>
             <td>${fmtPct((Number(h.balance) / total) * 100)}</td>
           </tr>`).join('')}
@@ -1155,7 +1168,7 @@ function renderTokenDistChart(holders) {
   if (!holders || holders.length === 0) return;
   const top10 = holders.slice(0, 10);
   const otherBalance = holders.slice(10).reduce((s, h) => s + (Number(h.balance) || 0), 0);
-  const labels = [...top10.map(h => shorten(h.address, 6)), 'Others'];
+  const labels = [...top10.map(h => displayAddr(h.address, shorten(h.address, 6))), 'Others'];
   const values = [...top10.map(h => Number(h.balance) || 0), otherBalance];
   const colors = ['#0891b2', '#22d3ee', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899', '#3b82f6', '#f97316', '#14b8a6', '#ef4444', '#a3a3a3'];
   CHARTS.distChart = new Chart(ctx, {
