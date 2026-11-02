@@ -85,7 +85,8 @@ CREATE TABLE IF NOT EXISTS surf_activities (
     collateral_asset TEXT NOT NULL DEFAULT '',
     pool_id TEXT NOT NULL DEFAULT '',
     tx_hash TEXT NOT NULL DEFAULT '' UNIQUE,
-    activity_time BIGINT NOT NULL DEFAULT 0
+    activity_time BIGINT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_activities_time ON surf_activities(activity_time DESC);
 CREATE INDEX IF NOT EXISTS idx_activities_addr ON surf_activities(address);
