@@ -1,14 +1,25 @@
 import { createClient } from '@supabase/supabase-js';
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_KEY
-);
+// Creating the client at module scope turns a missing env var into an opaque
+// FUNCTION_INVOCATION_FAILED, so build it defensively and report why.
+let supabase = null;
+let supabaseError = null;
+if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) {
+  supabaseError = 'SUPABASE_URL / SUPABASE_SERVICE_KEY are not set on this deployment';
+} else {
+  try {
+    supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+  } catch (e) {
+    supabaseError = 'Supabase client init failed: ' + e.message;
+  }
+}
 
 export default async function handler(req, res) {
   const { type, pool_id, from, to, limit } = req.query;
   res.setHeader('Content-Type', 'application/json');
   res.setHeader('Cache-Control', 'public, max-age=300, stale-while-revalidate=600');
+
+  if (supabaseError) return res.status(500).json({ error: supabaseError, configured: false });
 
   try {
     if (type === 'pools' && pool_id) {

@@ -94,6 +94,16 @@ function fmtRatio(ratio) {
   return (ratio * 100).toFixed(2) + '%';
 }
 
+// Compact numbers (fmtShort is for truncating address strings, not values)
+function fmtNum(v) {
+  if (v == null || isNaN(v)) return '0';
+  const n = Number(v);
+  if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+  if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+  if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(2) + 'K';
+  return n.toFixed(2);
+}
+
 function fmtShort(s, n = 8) {
   if (!s || s.length <= n * 2 + 3) return s || '';
   return s.slice(0, n) + '...' + s.slice(-n);
@@ -936,7 +946,7 @@ function renderStakingChart() {
       plugins: { legend: { labels: { color: t.text, boxWidth: 10, padding: 8, font: { size: 10 } } } },
       scales: {
         x: { grid: { color: t.grid }, ticks: { color: t.text, maxTicksLimit: 8 } },
-        y: { position: 'left', grid: { color: t.grid }, ticks: { color: t.text, callback: v => fmtShort(v) }, title: { display: true, text: 'SURF', color: t.text, font: { size: 10 } } },
+        y: { position: 'left', grid: { color: t.grid }, ticks: { color: t.text, callback: v => fmtNum(v) }, title: { display: true, text: 'SURF', color: t.text, font: { size: 10 } } },
         y1: { position: 'right', grid: { drawOnChartArea: false }, ticks: { color: t.text } },
       },
     },
@@ -1045,11 +1055,11 @@ function renderSurfTokenSummary(d) {
       </div>
       <div class="summary-card">
         <div class="summary-label">Total Supply</div>
-        <div class="summary-value">${supply ? fmtShort(supply) : '—'}</div>
+        <div class="summary-value">${supply ? fmtNum(supply) : '—'}</div>
       </div>
       <div class="summary-card">
         <div class="summary-label">Staked</div>
-        <div class="summary-value">${fmtShort(staked)}</div>
+        <div class="summary-value">${fmtNum(staked)}</div>
         <div class="summary-sub">${supply ? fmtPct((staked / supply) * 100) + ' of supply' : 'live stake'}</div>
       </div>
       <div class="summary-card">
@@ -1125,7 +1135,7 @@ function renderTokenHolders(holders) {
           <tr>
             <td>${i + 1}</td>
             <td>${escHtml(shorten(h.address, 10))}</td>
-            <td>${fmtShort(h.balance)}</td>
+            <td>${fmtNum(h.balance)}</td>
             <td>${fmtPct((Number(h.balance) / total) * 100)}</td>
           </tr>`).join('')}
       </tbody>

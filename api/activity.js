@@ -1,10 +1,18 @@
 import { createClient } from '@supabase/supabase-js';
 
 const SURF_API = 'https://surflending.org';
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_KEY
-);
+
+let supabase = null;
+let supabaseError = null;
+if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) {
+  supabaseError = 'SUPABASE_URL / SUPABASE_SERVICE_KEY are not set on this deployment';
+} else {
+  try {
+    supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+  } catch (e) {
+    supabaseError = 'Supabase client init failed: ' + e.message;
+  }
+}
 
 const txFeeCache = new Map();
 
@@ -108,6 +116,7 @@ async function fetchTxFees(txHashes) {
 export default async function handler(req, res) {
   res.setHeader('Content-Type', 'application/json');
   res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
+  if (supabaseError) return res.status(500).json({ error: supabaseError });
   try {
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const perPage = Math.min(100, Math.max(1, parseInt(req.query.per_page) || 50));

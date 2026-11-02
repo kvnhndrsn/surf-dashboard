@@ -1,10 +1,18 @@
 import { createClient } from '@supabase/supabase-js';
 
 const SURF_API = 'https://surflending.org';
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_KEY
-);
+
+let supabase = null;
+let supabaseError = null;
+if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) {
+  supabaseError = 'SUPABASE_URL / SUPABASE_SERVICE_KEY are not set on this deployment';
+} else {
+  try {
+    supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+  } catch (e) {
+    supabaseError = 'Supabase client init failed: ' + e.message;
+  }
+}
 
 async function surfFetch(path) {
   const res = await fetch(SURF_API + path);
@@ -13,9 +21,13 @@ async function surfFetch(path) {
 }
 
 export default async function handler(req, res) {
+  if (!process.env.SNAPSHOT_KEY) {
+    return res.status(500).json({ error: 'SNAPSHOT_KEY is not set on this deployment' });
+  }
   if (req.query.key !== process.env.SNAPSHOT_KEY) {
     return res.status(401).json({ error: 'invalid key' });
   }
+  if (supabaseError) return res.status(500).json({ error: supabaseError });
 
   try {
     const activities = await surfFetch('/api/getActivities?length=50');
