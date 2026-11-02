@@ -31,20 +31,44 @@ function escHtml(s) {
   return d.innerHTML;
 }
 
+// Thousands separators, matching the accrued-interest column (1,574.337140).
+function groupNum(v, decimals) {
+  return Number(v).toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+}
+
 function fmtUSD(v) {
   if (v == null || isNaN(v)) return '$0.00';
-  if (Math.abs(v) >= 1e9) return '$' + (v / 1e9).toFixed(2) + 'B';
-  if (Math.abs(v) >= 1e6) return '$' + (v / 1e6).toFixed(2) + 'M';
-  if (Math.abs(v) >= 1e3) return '$' + (v / 1e3).toFixed(2) + 'K';
-  return '$' + v.toFixed(2);
+  return '$' + groupNum(v, Math.abs(v) >= 1e3 ? 0 : 2);
 }
 
 function fmtADA(v) {
   if (v == null || isNaN(v)) return '0 ADA';
-  if (Math.abs(v) >= 1e9) return (v / 1e9).toFixed(2) + 'B ADA';
-  if (Math.abs(v) >= 1e6) return (v / 1e6).toFixed(2) + 'M ADA';
-  if (Math.abs(v) >= 1e3) return (v / 1e3).toFixed(2) + 'K ADA';
-  return v.toFixed(2) + ' ADA';
+  return groupNum(v, 2) + ' ADA';
+}
+
+// Chart axes keep the compact K/M/B forms: a grouped tick label crowds the plot.
+function fmtUSDAxis(v) {
+  if (v == null || isNaN(v)) return '$0';
+  if (Math.abs(v) >= 1e9) return '$' + (v / 1e9).toFixed(2) + 'B';
+  if (Math.abs(v) >= 1e6) return '$' + (v / 1e6).toFixed(2) + 'M';
+  if (Math.abs(v) >= 1e3) return '$' + (v / 1e3).toFixed(1) + 'K';
+  return '$' + v.toFixed(0);
+}
+
+function fmtADAAxis(v) {
+  if (v == null || isNaN(v)) return '0';
+  if (Math.abs(v) >= 1e9) return (v / 1e9).toFixed(2) + 'B';
+  if (Math.abs(v) >= 1e6) return (v / 1e6).toFixed(2) + 'M';
+  if (Math.abs(v) >= 1e3) return (v / 1e3).toFixed(1) + 'K';
+  return v.toFixed(0);
+}
+
+function fmtNumAxis(v) {
+  if (v == null || isNaN(v)) return '0';
+  if (Math.abs(v) >= 1e9) return (v / 1e9).toFixed(2) + 'B';
+  if (Math.abs(v) >= 1e6) return (v / 1e6).toFixed(2) + 'M';
+  if (Math.abs(v) >= 1e3) return (v / 1e3).toFixed(1) + 'K';
+  return String(Math.round(v));
 }
 
 function fmtPct(v) {
@@ -65,14 +89,12 @@ function fmtRatio(ratio) {
   return (ratio * 100).toFixed(2) + '%';
 }
 
-// Compact numbers (fmtShort is for truncating address strings, not values)
+// Full numbers with thousands separators (fmtShort is for truncating address
+// strings, not values).
 function fmtNum(v) {
   if (v == null || isNaN(v)) return '0';
   const n = Number(v);
-  if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(2) + 'B';
-  if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(2) + 'M';
-  if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(2) + 'K';
-  return n.toFixed(2);
+  return Number.isInteger(n) ? groupNum(n, 0) : groupNum(n, 2);
 }
 
 /* ---------- Loan health ---------- */
@@ -81,10 +103,10 @@ function poolFor(poolId) {
   return (state.surfData?.pools || []).find(p => p.poolId === poolId) || null;
 }
 
-// Health uses the liquidation threshold, so 1.0 is the liquidation point. This
+// The liquidation threshold is what makes 1.0 the liquidation point. This
 // reproduces surflending.org's own figure: 4,929 SURF collateral against 1,574 ADA
-// of debt -> (collateral value x 0.50) / debt = 0.51 on both sites.
-function collateralFactor(pos) {
+// of debt -> liquidation threshold 0.50 / LTV 0.9835 = 0.51 on both sites.
+function liquidationThreshold(pos) {
   const pool = poolFor(pos.poolId);
   if (!pool) return 0;
   if (pos.collateralPolicyId) {
@@ -102,7 +124,7 @@ function accruedInterestUsd(pos) {
 
 function fmtAdaPrecise(v) {
   if (v == null || isNaN(v)) return '0.000000 ADA';
-  return Number(v).toFixed(6) + ' ADA';
+  return groupNum(v, 6) + ' ADA';
 }
 
 // Accrued interest is reported in ADA, independent of the USD/ADA toggle.
@@ -112,12 +134,21 @@ function accruedInterestAda(pos) {
   return adaPrice > 0 ? usd / adaPrice : 0;
 }
 
-// Health = (Collateral Value x Collateral Factor) / (Borrowed + Accrued Interest)
+// LTV = Borrowed Value / Collateral Value. Principal only — accrued interest is
+// reported on its own row. Null when there is no collateral to divide by.
+function positionLtv(pos) {
+  const collateral = pos.collateralValueUSD || 0;
+  if (!(collateral > 0)) return null;
+  return (pos.principalValueUSD || 0) / collateral;
+}
+
+// Health = Liquidation Threshold / LTV. Above 1 is safe; at or below 1 is the
+// liquidation zone.
 function positionHealth(pos) {
-  const cf = collateralFactor(pos);
-  const debt = (pos.principalValueUSD || 0) + accruedInterestUsd(pos);
-  if (!(debt > 0) || !(cf > 0)) return null;
-  return ((pos.collateralValueUSD || 0) * cf) / debt;
+  const threshold = liquidationThreshold(pos);
+  const ltv = positionLtv(pos);
+  if (ltv == null || !(ltv > 0) || !(threshold > 0)) return null;
+  return threshold / ltv;
 }
 
 function healthClass(health) {
@@ -285,7 +316,7 @@ function renderSurfSummary() {
   const d = state.surfData;
   if (!d) { container.innerHTML = ''; return; }
   const s = d.summary || {};
-  const atRisk = (d.positions || []).filter(p => (p.ltv || 0) >= 0.75).length;
+  const atRisk = (d.positions || []).filter(p => (positionLtv(p) ?? 0) >= 0.75).length;
   const label = state.currency === 'usd' ? 'USD' : 'ADA';
   container.innerHTML = `
     <div class="summary-grid">
@@ -332,7 +363,7 @@ function renderSurfPoolFilter() {
 }
 
 function positionStatus(p) {
-  return (p.ltv || 0) >= 0.75 ? 'at_risk' : 'active';
+  return (positionLtv(p) ?? 0) >= 0.75 ? 'at_risk' : 'active';
 }
 
 const POSITION_SORTS = {
@@ -340,7 +371,7 @@ const POSITION_SORTS = {
   collateral: p => p.collateralValueUSD || 0,
   borrowed: p => p.principalValueUSD || 0,
   accrued: p => accruedInterestAda(p),
-  ltv: p => p.ltv || 0,
+  ltv: p => positionLtv(p) ?? 0,
   health: p => positionHealth(p) ?? 999,
   rate: p => p.interestRate || 0,
   status: p => positionStatus(p),
@@ -387,7 +418,7 @@ function renderSurfPositions() {
           <th data-sort="collateral">Collateral<span class="sort-arrow">${sortArrow('collateral')}</span></th>
           <th data-sort="borrowed">Debt<span class="sort-arrow">${sortArrow('borrowed')}</span></th>
           <th data-sort="accrued">Accrued (ADA)<span class="sort-arrow">${sortArrow('accrued')}</span></th>
-          <th data-sort="ltv">LTV<span class="sort-arrow">${sortArrow('ltv')}</span></th>
+          <th data-sort="ltv" title="LTV = Borrowed value ÷ Collateral value">LTV<span class="sort-arrow">${sortArrow('ltv')}</span></th>
           <th data-sort="health">Health<span class="sort-arrow">${sortArrow('health')}</span></th>
           <th data-sort="rate">Rate<span class="sort-arrow">${sortArrow('rate')}</span></th>
           <th data-sort="status">Status<span class="sort-arrow">${sortArrow('status')}</span></th>
@@ -395,28 +426,29 @@ function renderSurfPositions() {
       </thead>
       <tbody>
         ${positions.map(p => {
-          const ltv = p.ltv || 0;
+          const ltv = positionLtv(p);
           const status = positionStatus(p);
           const health = positionHealth(p);
-          const cf = collateralFactor(p);
-          const rowClass = ltv >= 0.9 ? 'row-danger' : status === 'at_risk' ? 'row-warning' : '';
+          const threshold = liquidationThreshold(p);
+          const rowClass = (ltv ?? 0) >= 0.9 ? 'row-danger' : status === 'at_risk' ? 'row-warning' : '';
           const healthTitle = health == null
-            ? 'Collateral factor unavailable for this pool'
-            : `Health = (Collateral value x ${fmtRatio(cf)} liquidation threshold) / (Debt + Accrued interest)`;
+            ? 'Liquidation threshold unavailable for this pool'
+            : `Health = Liquidation threshold (${fmtRatio(threshold)}) / LTV (${fmtRatio(ltv)})`;
           return `
             <tr class="${rowClass}">
               <td>${escHtml(displayAddr(p.address, shorten(p.address || '', 8)))}</td>
               <td>${fmtMoney(p.collateralValueUSD)} ${tokenCell(p.collateralPolicyId, p.collateralAssetName, p.collateralTicker)}</td>
               <td>${fmtMoney(p.principalValueUSD)} ${tokenCell(p.principalPolicyId, p.principalAssetName, p.principalTicker)}</td>
               <td class="txt-muted">${fmtAdaPrecise(accruedInterestAda(p))}</td>
-              <td>${fmtRatio(ltv)}</td>
+              <td title="LTV = Borrowed value ÷ Collateral value">${ltv == null ? '—' : fmtRatio(ltv)}</td>
               <td><span class="health ${healthClass(health)}" title="${escHtml(healthTitle)}">${health == null ? '—' : health.toFixed(2)}</span></td>
               <td>${fmtRatio(p.interestRate)}</td>
               <td><span class="status-badge status-${status}">${escHtml(status.replace('_', ' '))}</span></td>
             </tr>`;
         }).join('')}
       </tbody>
-    </table>`;
+    </table>
+    <div class="table-note">LTV = Borrowed value ÷ Collateral value · Health = Liquidation threshold ÷ LTV · above 1 is safe, at or below 1 is the liquidation zone.</div>`;
 
   container.querySelectorAll('th[data-sort]').forEach(th => {
     th.addEventListener('click', () => {
@@ -680,9 +712,11 @@ function buildAnalytics(raw) {
       apr: rows.map(r => (r.avg_borrow_apr || 0) * 100),
     },
     marketComposition: {
-      labels: compLabels.slice(0, top.length),
-      supply: top.map(([, v]) => v.supply),
-      borrow: top.map(([, v]) => v.borrow),
+      labels: compLabels,
+      supply: compValues,
+      borrow: top.map(([, v]) => v.borrow).concat(
+        rest.length > 0 ? [rest.reduce((s, [, v]) => s + v.borrow, 0)] : []
+      ),
     },
     revenueHistory: {
       labels,
@@ -787,8 +821,17 @@ function renderTvlChart() {
   CHARTS.tvlChart = new Chart(ctx, {
     type: 'line',
     data: { labels: data.labels, datasets: [{ label: 'TVL', data: data.values, borderColor: chartColors.primary, backgroundColor: chartColors.primary + '20', fill: true, tension: 0.3, pointRadius: 0 }] },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { grid: { color: t.grid }, ticks: { color: t.text, maxTicksLimit: 8 } }, y: { grid: { color: t.grid }, ticks: { color: t.text, callback: v => state.currency === 'usd' ? fmtUSD(v) : fmtADA(v) } } } },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { grid: { color: t.grid }, ticks: { color: t.text, maxTicksLimit: 8 } }, y: { grid: { color: t.grid }, ticks: { color: t.text, callback: v => state.currency === 'usd' ? fmtUSDAxis(v) : fmtADAAxis(v) } } } },
   });
+}
+
+// One colour per slice, sized to the label count, with the aggregated "Other"
+// bucket always grey so it stays visible in the legend.
+const COMP_COLORS = ['#0891b2', '#22d3ee', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899', '#3b82f6', '#f97316', '#14b8a6'];
+
+function compositionColors(labels) {
+  let i = 0;
+  return labels.map(l => (l === 'Other' ? '#a3a3a3' : COMP_COLORS[i++ % COMP_COLORS.length]));
 }
 
 function renderTvlCompChart() {
@@ -796,10 +839,9 @@ function renderTvlCompChart() {
   if (!ctx) return;
   const data = state.analyticsData?.tvlComposition;
   if (!data) return;
-  const colors = [chartColors.primary, chartColors.secondary, chartColors.green, chartColors.yellow, chartColors.purple, chartColors.pink, chartColors.blue];
   CHARTS.tvlCompChart = new Chart(ctx, {
     type: 'doughnut',
-    data: { labels: data.labels, datasets: [{ data: data.values, backgroundColor: colors.slice(0, data.labels.length), borderWidth: 0 }] },
+    data: { labels: data.labels, datasets: [{ data: data.values, backgroundColor: compositionColors(data.labels), borderWidth: 0 }] },
     options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right', labels: { color: chartTheme().text, boxWidth: 10, padding: 8, font: { size: 10 } } } } },
   });
 }
@@ -819,7 +861,7 @@ function renderBorrowSupplyChart() {
         { label: 'Borrowed', data: data.borrowed, borderColor: chartColors.red, backgroundColor: chartColors.red + '20', fill: true, tension: 0.3, pointRadius: 0 },
       ],
     },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: t.text, boxWidth: 10, padding: 8, font: { size: 10 } } } }, scales: { x: { grid: { color: t.grid }, ticks: { color: t.text, maxTicksLimit: 8 } }, y: { grid: { color: t.grid }, ticks: { color: t.text, callback: v => state.currency === 'usd' ? fmtUSD(v) : fmtADA(v) } } } },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: t.text, boxWidth: 10, padding: 8, font: { size: 10 } } } }, scales: { x: { grid: { color: t.grid }, ticks: { color: t.text, maxTicksLimit: 8 } }, y: { grid: { color: t.grid }, ticks: { color: t.text, callback: v => state.currency === 'usd' ? fmtUSDAxis(v) : fmtADAAxis(v) } } } },
   });
 }
 
@@ -855,7 +897,7 @@ function renderMarketCompChart() {
   if (!ctx) return;
   const data = state.analyticsData?.marketComposition;
   if (!data) return;
-  const colors = [chartColors.primary, chartColors.secondary, chartColors.green, chartColors.yellow, chartColors.purple, chartColors.pink, chartColors.blue, chartColors.orange];
+  const colors = compositionColors(data.labels);
   CHARTS.marketCompChart = new Chart(ctx, {
     type: 'bar',
     data: {
@@ -865,7 +907,7 @@ function renderMarketCompChart() {
         { label: 'Borrow', data: data.borrow, backgroundColor: colors.map(c => c + '40'), borderColor: colors, borderWidth: 1 },
       ],
     },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: chartTheme().text, boxWidth: 10, padding: 8, font: { size: 10 } } } }, scales: { x: { grid: { color: chartTheme().grid }, ticks: { color: chartTheme().text } }, y: { grid: { color: chartTheme().grid }, ticks: { color: chartTheme().text, callback: v => state.currency === 'usd' ? fmtUSD(v) : fmtADA(v) } } } },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: chartTheme().text, boxWidth: 10, padding: 8, font: { size: 10 } } } }, scales: { x: { grid: { color: chartTheme().grid }, ticks: { color: chartTheme().text } }, y: { grid: { color: chartTheme().grid }, ticks: { color: chartTheme().text, callback: v => state.currency === 'usd' ? fmtUSDAxis(v) : fmtADAAxis(v) } } } },
   });
 }
 
@@ -885,7 +927,7 @@ function renderRevenueChart() {
         { label: 'Fees', data: data.fees, backgroundColor: chartColors.green + '80', borderColor: chartColors.green, borderWidth: 1 },
       ],
     },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: t.text, boxWidth: 10, padding: 8, font: { size: 10 } } } }, scales: { x: { stacked: true, grid: { color: t.grid }, ticks: { color: t.text, maxTicksLimit: 8 } }, y: { stacked: true, grid: { color: t.grid }, ticks: { color: t.text, callback: v => state.currency === 'usd' ? fmtUSD(v) : fmtADA(v) } } } },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: t.text, boxWidth: 10, padding: 8, font: { size: 10 } } } }, scales: { x: { stacked: true, grid: { color: t.grid }, ticks: { color: t.text, maxTicksLimit: 8 } }, y: { stacked: true, grid: { color: t.grid }, ticks: { color: t.text, callback: v => state.currency === 'usd' ? fmtUSDAxis(v) : fmtADAAxis(v) } } } },
   });
 }
 
@@ -909,7 +951,7 @@ function renderStakingChart() {
       plugins: { legend: { labels: { color: t.text, boxWidth: 10, padding: 8, font: { size: 10 } } } },
       scales: {
         x: { grid: { color: t.grid }, ticks: { color: t.text, maxTicksLimit: 8 } },
-        y: { position: 'left', grid: { color: t.grid }, ticks: { color: t.text, callback: v => fmtNum(v) }, title: { display: true, text: 'SURF', color: t.text, font: { size: 10 } } },
+        y: { position: 'left', grid: { color: t.grid }, ticks: { color: t.text, callback: v => fmtNumAxis(v) }, title: { display: true, text: 'SURF', color: t.text, font: { size: 10 } } },
         y1: { position: 'right', grid: { drawOnChartArea: false }, ticks: { color: t.text } },
       },
     },

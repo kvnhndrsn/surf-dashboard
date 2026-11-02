@@ -197,6 +197,11 @@ table tbody tr:hover { background: var(--primary-dim); }
 
 .empty-state p { margin-top: 0.4rem; font-size: 0.82rem; }
 
+.table-note {
+  margin-top: 0.55rem; padding: 0 0.65rem;
+  font-size: 0.68rem; color: var(--text3); line-height: 1.5;
+}
+
 .modal-overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,0.6);
   display: none; align-items: center; justify-content: center;
